@@ -50,8 +50,6 @@ import android.graphics.Rect;
 import android.hardware.display.DisplayManagerGlobal;
 import android.os.Build;
 import android.os.HandlerThread;
-
-import java.lang.Exception;
 import android.os.SystemClock;
 import android.util.DisplayMetrics;
 import android.view.Display;
@@ -63,47 +61,49 @@ import android.view.Surface;
 import android.view.accessibility.AccessibilityNodeInfo;
 
 import com.android.commands.monkey.Monkey;
-import com.android.commands.monkey.utils.MonkeyUtils;
 import com.android.commands.monkey.action.Action;
 import com.android.commands.monkey.action.FuzzAction;
 import com.android.commands.monkey.action.ModelAction;
+import com.android.commands.monkey.events.CustomEvent;
+import com.android.commands.monkey.events.CustomEventFuzzer;
 import com.android.commands.monkey.events.MonkeyEvent;
 import com.android.commands.monkey.events.MonkeyEventQueue;
 import com.android.commands.monkey.events.MonkeyEventSource;
 import com.android.commands.monkey.events.base.MonkeyActivityEvent;
 import com.android.commands.monkey.events.base.MonkeyCommandEvent;
+import com.android.commands.monkey.events.base.MonkeyDataActivityEvent;
 import com.android.commands.monkey.events.base.MonkeyIMEEvent;
 import com.android.commands.monkey.events.base.MonkeyKeyEvent;
-import com.android.commands.monkey.events.base.MonkeyDataActivityEvent;
 import com.android.commands.monkey.events.base.MonkeyRotationEvent;
 import com.android.commands.monkey.events.base.MonkeySchemaEvent;
 import com.android.commands.monkey.events.base.MonkeyThrottleEvent;
 import com.android.commands.monkey.events.base.MonkeyTouchEvent;
 import com.android.commands.monkey.events.base.MonkeyWaitEvent;
+import com.android.commands.monkey.events.base.mutation.MutationAirplaneEvent;
+import com.android.commands.monkey.events.base.mutation.MutationAlwaysFinishActivityEvent;
+import com.android.commands.monkey.events.base.mutation.MutationWifiEvent;
 import com.android.commands.monkey.events.customize.ClickEvent;
-import com.android.commands.monkey.events.CustomEvent;
-import com.android.commands.monkey.events.CustomEventFuzzer;
 import com.android.commands.monkey.events.customize.ShellEvent;
 import com.android.commands.monkey.fastbot.client.ActionType;
 import com.android.commands.monkey.fastbot.client.Operate;
 import com.android.commands.monkey.framework.AndroidDevice;
-import com.android.commands.monkey.events.base.mutation.MutationAirplaneEvent;
-import com.android.commands.monkey.events.base.mutation.MutationAlwaysFinishActivityEvent;
-import com.android.commands.monkey.events.base.mutation.MutationWifiEvent;
 import com.android.commands.monkey.provider.SchemaProvider;
 import com.android.commands.monkey.provider.ShellProvider;
 import com.android.commands.monkey.tree.TreeBuilder;
 import com.android.commands.monkey.utils.Config;
 import com.android.commands.monkey.utils.ImageWriterQueue;
 import com.android.commands.monkey.utils.Logger;
+import com.android.commands.monkey.utils.MonkeyUtils;
 import com.android.commands.monkey.utils.RandomHelper;
 import com.android.commands.monkey.utils.UUIDHelper;
 import com.android.commands.monkey.utils.Utils;
 import com.bytedance.fastbot.AiClient;
+import com.bytedance.fastbot.OkHttpClient;
 
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -115,7 +115,6 @@ import java.util.Map;
 import java.util.Random;
 import java.util.Stack;
 import java.util.concurrent.TimeoutException;
-
 
 /**
  * @author Zhao Zhang
@@ -251,9 +250,9 @@ public class MonkeySourceApeNative implements MonkeyEventSource {
             imageThread.start();
         }
         getTotalActivities();
-        connect();
 
-        Logger.println("// device uuid is " + did);
+         connect();
+         Logger.println("// device uuid is " + did);
     }
 
     /**
@@ -399,6 +398,7 @@ public class MonkeySourceApeNative implements MonkeyEventSource {
     void sleep(long time) {
         try {
             Thread.sleep(time);
+
         } catch (InterruptedException e) {
             e.printStackTrace();
         }

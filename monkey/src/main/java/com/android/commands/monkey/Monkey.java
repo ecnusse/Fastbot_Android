@@ -78,14 +78,6 @@ import java.util.Locale;
 import java.util.Random;
 import java.util.Set;
 
-import static com.android.commands.monkey.utils.Config.LogcatLineNums;
-import static com.android.commands.monkey.utils.Config.allowStartActivityEscapeAny;
-import static com.android.commands.monkey.utils.Config.allowStartActivityEscapePackageName;
-import static com.android.commands.monkey.utils.Config.fastbotversion;
-import static com.android.commands.monkey.utils.Config.grantAllPermission;
-import static com.android.commands.monkey.utils.Config.requestLogcat;
-import static com.android.commands.monkey.utils.Config.startMutaion;
-
 
 /**
  * @author Zhao Zhang, Tianxiao Gu
@@ -355,6 +347,11 @@ public class Monkey {
      * use fastbot-native nstep q algorithmic decision
      */
     private boolean mUseApeNative;
+
+    /**
+     * use fastbot-u2 q algorithmic decision
+     */
+    private boolean mUseApeU2;
 
     /**
      * use fastbot-native reuse nq algorithmic decision
@@ -789,6 +786,37 @@ public class Monkey {
                 Logger.println("// init with reuse agent");
                 ((MonkeySourceApeNative) mEventSource).initReuseAgent();
             }
+        } else if (mUseApeU2) {
+            // fastbot monkey
+            Logger.println("// runing fastbot-U2");
+
+            // fastbot monkey
+            Logger.println("// runing fastbot");
+
+            // init framework android device
+            AndroidDevice.initializeAndroidDevice(mAm, mWm, mPm, ime);
+            AndroidDevice.checkInteractive();
+
+            if (!"".equals(mMappingFilePath) && !"max.mapping".equals(mMappingFilePath)) {
+                AiClient.loadResMapping(mMappingFilePath);
+            }
+
+            mEventSource = new MonkeySourceApeU2(mRandom, mMainApps, mThrottle, mRandomizeThrottle, mPermissionTargetSystem, mOutputDirectory);
+            mEventSource.setVerbose(mVerbose);
+
+            // grant all permissions required, enabled by default
+            if (grantAllPermission) {
+                ((MonkeySourceApeU2) mEventSource).grantRuntimePermissions("GrantPermissionsActivity");
+            }
+            if (RandomHelper.toss(startMutaion)) {
+                ((MonkeySourceApeU2) mEventSource).startMutation(mWm, mAm, mVerbose);
+            }
+            ((MonkeySourceApeU2) mEventSource).setAttribute(mMainApps.get(0).getPackageName(), appVersionCode, mMainIntentAction, mMainIntentData, mMainQuickAppActivity);
+            if (mUseApeNativeReuse) {
+                Logger.println("// init with reuse agent");
+                ((MonkeySourceApeU2) mEventSource).initReuseAgent();
+            }
+
         } else {
             // random monkey by default
             Logger.println("// runing google monkey mode");
@@ -833,7 +861,7 @@ public class Monkey {
             // Release the rotation lock if it's still held and restore the
             // original orientation.
             Logger.println("// Monkey is over!");
-            new MonkeyRotationEvent(Surface.ROTATION_0, false).injectEvent(mWm, mAm, mVerbose);
+//            new MonkeyRotationEvent(Surface.ROTATION_0, false).injectEvent(mWm, mAm, mVerbose);
         }
 
         if (this.mEventSource instanceof MonkeySourceRandom) {
@@ -930,7 +958,7 @@ public class Monkey {
             return false;
         }
         Set<String> validPackages = new HashSet<>();
-
+        String agentType;
         try {
             String opt;
             while ((opt = nextOption()) != null) {
@@ -979,7 +1007,14 @@ public class Monkey {
                         break;
                     case "--agent":
                         mUseApeNative = true;
-                        String agentType = nextOptionData();
+                        agentType = nextOptionData();
+                        if ("reuseq".equals(agentType)) {
+                            mUseApeNativeReuse = true;
+                        }
+                        break;
+                    case "--agent-u2":
+                        mUseApeU2 = true;
+                        agentType = nextOptionData();
                         if ("reuseq".equals(agentType)) {
                             mUseApeNativeReuse = true;
                         }
