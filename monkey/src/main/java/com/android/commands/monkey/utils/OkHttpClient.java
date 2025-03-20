@@ -1,11 +1,7 @@
-package com.bytedance.fastbot;
-
-import com.android.commands.monkey.utils.Logger;
+package com.android.commands.monkey.utils;
 
 import java.io.IOException;
 
-import okhttp3.Call;
-import okhttp3.Callback;
 import okhttp3.HttpUrl;
 import okhttp3.MediaType;
 import okhttp3.Request;
@@ -30,22 +26,22 @@ public class OkHttpClient {
         return INSTANCE;
     }
 
-    private HttpUrl.Builder get_url_builder() {
+    public HttpUrl.Builder get_url_builder() {
         return new HttpUrl.Builder()
-                          .scheme("http")
-                          .host("127.0.0.1")
-                          .port(9008);
+                .scheme("http")
+                .host("127.0.0.1")
+                .port(9008);
     }
 
     // 连接方法，通过 OkHttpClient 发送请求
     public boolean connect() {
         String url = get_url_builder().addPathSegment("ping")
-                                      .build()
-                                      .toString();
+                .build()
+                .toString();
 
         Request request = new Request.Builder()
-                                     .url(url)
-                                     .build();
+                .url(url)
+                .build();
 
         try {
             Logger.println("Request: " + request);
@@ -69,33 +65,40 @@ public class OkHttpClient {
         return loaded;
     }
 
-    public void newCall(Request request, Callback callback){
-        client.newCall(request).enqueue(callback);
+    public Response newCall(Request request) throws IOException{
+        Logger.println("Request: " + request.toString());
+        Response response = client.newCall(request).execute();
+
+        if (!response.isSuccessful()) {
+            Logger.errorPrintln("Failed with code:" + response.code());
+        } else {
+            Logger.println("Request success.");
+        }
+        return response;
     }
 
-    public void get(final String url, Callback callback) {
-        final Request request = new Request.Builder()
+    public Response get ( final String url ) throws IOException{
+        Request request = new Request.Builder()
                 .url(url)
                 .build();
+        return newCall(request);
     }
 
-    public void post(final String url, String json, Callback callback) {
+    public Response post ( final String url, String json) throws IOException{
         RequestBody body = RequestBody.create(JSON, json);
-        final Request request = new Request.Builder()
+        Request request = new Request.Builder()
                 .url(url)
                 .post(body)
                 .build();
-        Call call = client.newCall(request);
-        call.enqueue(callback);
+        return newCall(request);
     }
 
-    public void delete(final String url, String json, Callback callback) {
+    public Response delete ( final String url, String json) throws IOException{
         RequestBody body = RequestBody.create(JSON, json);
         Request request = new Request.Builder()
                 .url(url)
                 .delete(body)
                 .build();
-        Call call = client.newCall(request);
-        call.enqueue(callback);
+        return newCall(request);
     }
 }

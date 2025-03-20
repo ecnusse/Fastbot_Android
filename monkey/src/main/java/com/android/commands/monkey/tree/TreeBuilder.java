@@ -10,6 +10,9 @@ import android.view.accessibility.AccessibilityNodeInfo;
 
 import com.android.commands.monkey.utils.Logger;
 
+import org.w3c.dom.Element;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
 import org.xmlpull.v1.XmlSerializer;
 
 import java.io.IOException;
@@ -125,6 +128,48 @@ public class TreeBuilder {
         }
     }
 
+    private static void dumpNodeRec(Element node, XmlSerializer serializer, int index, int depth) throws IOException {
+        // 开始节点标签
+        serializer.startTag("", "node");
+
+        serializer.attribute("", "index", node.hasAttribute("index") ? node.getAttribute("index") : String.valueOf(index));
+        serializer.attribute("", "text", node.getAttribute("text"));
+        serializer.attribute("", "resource-id", node.getAttribute("resource-id"));
+        serializer.attribute("", "class", node.getAttribute("class"));
+        serializer.attribute("", "package", node.getAttribute("package"));
+        serializer.attribute("", "content-desc", node.getAttribute("content-desc"));
+        serializer.attribute("", "checkable", node.getAttribute("checkable"));
+        serializer.attribute("", "checked", node.getAttribute("checked"));
+        serializer.attribute("", "clickable", node.getAttribute("clickable"));
+        serializer.attribute("", "enabled", node.getAttribute("enabled"));
+        serializer.attribute("", "focusable", node.getAttribute("focusable"));
+        serializer.attribute("", "focused", node.getAttribute("focused"));
+        serializer.attribute("", "scrollable", node.getAttribute("scrollable"));
+        serializer.attribute("", "long-clickable", node.getAttribute("long-clickable"));
+        serializer.attribute("", "password", node.getAttribute("password"));
+        serializer.attribute("", "selected", node.getAttribute("selected"));
+        serializer.attribute("", "bounds", node.getAttribute("bounds"));
+
+
+        depth += 1;
+
+        if (depth <= 25) {
+            // 处理子 Element 节点
+            NodeList childNodes = node.getChildNodes();
+            int childElementIndex = 0;
+            boolean hasChildElement = false;
+            for (int i = 0; i < childNodes.getLength(); i++) {
+                Node child = childNodes.item(i);
+                if (child.getNodeType() == Node.ELEMENT_NODE) {
+                    hasChildElement = true;
+                    dumpNodeRec((Element) child, serializer, childElementIndex, depth);
+                    childElementIndex++;
+                }
+            }
+            serializer.endTag("", "node");
+        }
+    }
+
     /**
      * Using {@link AccessibilityNodeInfo} this method will walk the layout hierarchy
      * and generates an xml dump to the location specified by <code>dumpFile</code>
@@ -148,4 +193,53 @@ public class TreeBuilder {
         return dumpstrRet;
     }
 
+    /**
+     * Filter the attributes in U2 XML tree
+     * @param root
+     */
+    public static void filterTree(Element root) {
+        if (root == null) {
+            return;
+        }
+
+        // filter the necessary attrs
+        String[] attributeToRemove = {"drawing-order", "hint", "display-id"};
+        for (String attr : attributeToRemove) {
+            if (root.hasAttribute(attr)) {
+                root.removeAttribute(attr);
+            }
+        }
+
+        NodeList childNodes = root.getChildNodes();
+        for (int i = 0; i < childNodes.getLength(); i++) {
+            Node node = childNodes.item(i);
+            if (node.getNodeType() == Node.ELEMENT_NODE) {
+                Element child = (Element) node;
+                filterTree(child);
+            }
+        }
+    }
+
+    /**
+     * Using {@link AccessibilityNodeInfo} this method will walk the layout hierarchy
+     * and generates an xml dump to the location specified by <code>dumpFile</code>
+     */
+    public static String dumpDocumentStrWithOutTree(Element rootInfo) {
+        String dumpstrRet = "";
+        try {
+            StringWriter textWriter = new StringWriter();
+            XmlSerializer serializer = Xml.newSerializer();
+            serializer.setOutput(textWriter);
+            serializer.startDocument("UTF-8", true);
+            serializer.setFeature("http://xmlpull.org/v1/doc/features.html#indent-output", true);
+
+            int depth = 1;
+            dumpNodeRec(rootInfo, serializer, 0, depth);
+            serializer.endDocument();
+            dumpstrRet = textWriter.toString();
+        } catch (IllegalArgumentException | IOException | IllegalStateException e) {
+            Logger.println("failed to dump window to file: " + e.toString());
+        }
+        return dumpstrRet;
+    }
 }

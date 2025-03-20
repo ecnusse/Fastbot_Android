@@ -18,6 +18,14 @@
 
 package com.android.commands.monkey;
 
+import static com.android.commands.monkey.utils.Config.LogcatLineNums;
+import static com.android.commands.monkey.utils.Config.allowStartActivityEscapeAny;
+import static com.android.commands.monkey.utils.Config.allowStartActivityEscapePackageName;
+import static com.android.commands.monkey.utils.Config.fastbotversion;
+import static com.android.commands.monkey.utils.Config.grantAllPermission;
+import static com.android.commands.monkey.utils.Config.requestLogcat;
+import static com.android.commands.monkey.utils.Config.startMutaion;
+
 import android.app.IActivityController;
 import android.app.IActivityManager;
 import android.content.ComponentName;
@@ -36,7 +44,6 @@ import android.os.ServiceManager;
 import android.os.StrictMode;
 import android.os.SystemClock;
 import android.view.IWindowManager;
-import android.view.Surface;
 
 import com.android.commands.monkey.events.MonkeyEvent;
 import com.android.commands.monkey.events.MonkeyEventSource;
@@ -45,19 +52,20 @@ import com.android.commands.monkey.events.base.MonkeyKeyEvent;
 import com.android.commands.monkey.events.base.MonkeyMotionEvent;
 import com.android.commands.monkey.events.base.MonkeyRotationEvent;
 import com.android.commands.monkey.events.base.MonkeyThrottleEvent;
-import com.android.commands.monkey.framework.APIAdapter;
-import com.android.commands.monkey.framework.AndroidDevice;
 import com.android.commands.monkey.events.base.mutation.MutationAirplaneEvent;
 import com.android.commands.monkey.events.base.mutation.MutationWifiEvent;
+import com.android.commands.monkey.framework.APIAdapter;
+import com.android.commands.monkey.framework.AndroidDevice;
 import com.android.commands.monkey.source.MonkeySourceApeNative;
+import com.android.commands.monkey.source.MonkeySourceApeU2;
 import com.android.commands.monkey.source.MonkeySourceRandom;
 import com.android.commands.monkey.source.MonkeySourceRandomScript;
 import com.android.commands.monkey.source.MonkeySourceScript;
 import com.android.commands.monkey.utils.Config;
+import com.android.commands.monkey.utils.ContextUtils;
 import com.android.commands.monkey.utils.Logger;
 import com.android.commands.monkey.utils.MonkeyUtils;
 import com.android.commands.monkey.utils.RandomHelper;
-import com.android.commands.monkey.utils.ContextUtils;
 import com.bytedance.fastbot.AiClient;
 
 import java.io.BufferedReader;
@@ -790,9 +798,6 @@ public class Monkey {
             // fastbot monkey
             Logger.println("// runing fastbot-U2");
 
-            // fastbot monkey
-            Logger.println("// runing fastbot");
-
             // init framework android device
             AndroidDevice.initializeAndroidDevice(mAm, mWm, mPm, ime);
             AndroidDevice.checkInteractive();
@@ -846,6 +851,8 @@ public class Monkey {
             return -5;
         }
 
+        Logger.println("Server validated");
+
         // If we're profiling, do it immediately before/after the main monkey
         if (mGenerateHprof) {
             signalPersistentProcesses();
@@ -872,6 +879,12 @@ public class Monkey {
             new MutationAirplaneEvent().resetStatusAndExecute(mWm, mAm, mVerbose);
             new MutationWifiEvent().resetStatusAndExecute(mWm,mAm,mVerbose);
             ((MonkeySourceApeNative) this.mEventSource).tearDown();
+        }
+
+        if (this.mEventSource instanceof MonkeySourceApeU2) {
+            new MutationAirplaneEvent().resetStatusAndExecute(mWm, mAm, mVerbose);
+            new MutationWifiEvent().resetStatusAndExecute(mWm,mAm,mVerbose);
+            ((MonkeySourceApeU2) this.mEventSource).tearDown();
         }
 
         // sync handle error information
@@ -2167,6 +2180,8 @@ public class Monkey {
             return (mKillProcessAfterError) ? -1 : 1;
         }
     }
+
+
 
 }
 
