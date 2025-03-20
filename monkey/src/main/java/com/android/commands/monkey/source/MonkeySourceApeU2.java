@@ -437,12 +437,23 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
         hierarchy = null;
     }
 
+
+    /**
+     * The response from u2 contains all the components on screen.
+     * @param tree The root of tree return by u2.
+     * @return The root of the current activate testing package.
+     */
     public Element getRootElement(Document tree) {
         NodeList childNodes = tree.getDocumentElement().getChildNodes();
-        for (int i = 0; i < childNodes.getLength(); i++) {
+        // traverse the child list backwards to filter the input_method keyboard
+        for (int i = childNodes.getLength() - 1; i >= 0; i--) {
             Node node = childNodes.item(i);
-            if (node.getNodeType() == Node.ELEMENT_NODE) {  // 确保是元素节点
-                return (Element) node;
+            String cur_package;
+            if (node.getNodeType() == Node.ELEMENT_NODE) {
+                cur_package = ((Element) node).getAttribute("package");
+                if (!"com.android.systemui".equals(cur_package)) {
+                    return (Element) node;
+                }
             }
         }
         return null;
