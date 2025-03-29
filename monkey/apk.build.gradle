@@ -58,8 +58,8 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility 1.8
-        targetCompatibility 1.8
+        sourceCompatibility = "8"
+        targetCompatibility = "8"
     }
 
     externalNativeBuild {
@@ -89,6 +89,7 @@ dependencies {
     compileOnly files('libs/framework.jar')
     implementation 'com.google.code.gson:gson:2.8.9'
     implementation 'com.vdurmont:emoji-java:5.0.0'
+
 }
 
 gradle.projectsEvaluated {

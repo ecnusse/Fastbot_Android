@@ -86,8 +86,10 @@ import com.android.commands.monkey.utils.ImageWriterQueue;
 import com.android.commands.monkey.utils.JsonRPCRequest;
 import com.android.commands.monkey.utils.JsonRPCResponse;
 import com.android.commands.monkey.utils.Logger;
+import com.android.commands.monkey.utils.MonkeySemaphore;
 import com.android.commands.monkey.utils.MonkeyUtils;
 import com.android.commands.monkey.utils.OkHttpClient;
+import com.android.commands.monkey.utils.ProxyServer;
 import com.android.commands.monkey.utils.RandomHelper;
 import com.android.commands.monkey.utils.UUIDHelper;
 import com.bytedance.fastbot.AiClient;
@@ -119,6 +121,7 @@ import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
 
+import fi.iki.elonen.NanoHTTPD;
 import okhttp3.Response;
 
 public class MonkeySourceApeU2 implements MonkeyEventSource {
@@ -144,6 +147,10 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
      * monkey event queue
      */
     private final MonkeyEventQueue mQ;
+    /**
+     * The last event numbers in MQ.
+     */
+    private int lastMQEvents = 0;
     /**
      * debug level
      */
@@ -231,6 +238,7 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
     private OkHttpClient client;
     private Element hierarchy;
     private DocumentBuilder documentBuilder;
+    private final ProxyServer server;
 
     public MonkeySourceApeU2(Random random, List<ComponentName> MainApps,
                                  long throttle, boolean randomizeThrottle, boolean permissionTargetSystem,
@@ -257,6 +265,16 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
 
         connect();
         Logger.println("// device uuid is " + did);
+
+        this.server = new ProxyServer(8090);
+        try {
+            server.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false);
+            Logger.println("代理服务器已启动，监听端口：" + 8090);
+        } catch (IOException e) {
+            Logger.println("服务器启动失败：" + e.getMessage());
+            e.printStackTrace();
+            throw new RuntimeException(e);
+        }
     }
 
     /**
@@ -338,17 +356,28 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
      */
     public MonkeyEvent getNextEvent() {
         checkAppActivity();
+        if (!hasEvent() && lastMQEvents == 1){
+            MonkeySemaphore.doneMonkey.release();
+            Logger.println("释放信号量： doneMonkey");
+        }
         if (!hasEvent()) {
             try {
+                Logger.println("等待信号量： stepMonkey");
+                MonkeySemaphore.stepMonkey.acquire();
+                Logger.println("收到信号量： steadb forward tcp:3663 tcp:8090pMonkey");
                 generateEvents();
             } catch (RuntimeException e) {
                 Logger.errorPrintln(e.getMessage());
                 e.printStackTrace();
                 clearEvent();
                 return null;
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
             }
         }
         mEventCount++;
+        lastMQEvents = mQ.size();
+        Logger.println("MQ Events Size is " + lastMQEvents);
         return popEvent();
     }
 
@@ -514,7 +543,7 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
         int repeat = refectchInfoCount;
         dumpHierarchy();
         stringOfGuiTree = this.stringOfGuiTree;
-        Logger.println("Repeat: " + stringOfGuiTree);
+//        Logger.println("Repeat: " + stringOfGuiTree);
 
         // try to get AccessibilityNodeInfo quickly for several times.
         while (repeat-- > 0) {
@@ -554,7 +583,7 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
         boolean allowFuzzing = true;
 
         Logger.println("topActivity Name: " + topActivityName);
-        Logger.println("GuiTree: " + stringOfGuiTree);
+//        Logger.println("GuiTree: " + stringOfGuiTree);
 
         if (topActivityName != null && !"".equals(stringOfGuiTree)) {
             try {
@@ -562,7 +591,7 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
 
                 Logger.println("// Dumped stringOfGuiTree");
                 Logger.println("topActivityName: " + topActivityName.getClassName());
-                Logger.println(stringOfGuiTree);
+//                Logger.println(stringOfGuiTree);
 
                 Operate operate = AiClient.getAction(topActivityName.getClassName(), stringOfGuiTree);
                 operate.throttle += (int) this.mThrottle;

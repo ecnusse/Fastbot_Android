@@ -33,13 +33,10 @@ import android.content.pm.PermissionInfo;
 import android.content.pm.ResolveInfo;
 import android.os.Bundle;
 import android.os.IBinder;
-import android.os.RemoteException;
 import android.view.inputmethod.InputMethodInfo;
 
 import com.android.commands.monkey.utils.Logger;
 import com.android.internal.view.IInputMethodManager;
-import com.android.commands.monkey.utils.ContextUtils;
-
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -289,6 +286,14 @@ public class APIAdapter {
             e.printStackTrace();
         }
         Logger.println("// device serial number is " + serial);
+
+        // 当前堆栈
+//        StringBuilder stackTraceBuilder = new StringBuilder("Current stack info:\n");
+//        for (StackTraceElement element : Thread.currentThread().getStackTrace()) {
+//            stackTraceBuilder.append(element.toString()).append("\n");
+//        }
+//        Logger.println(stackTraceBuilder.toString());
+
         return serial;
     }
 }

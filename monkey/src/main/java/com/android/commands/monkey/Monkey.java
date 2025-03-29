@@ -44,6 +44,7 @@ import android.os.ServiceManager;
 import android.os.StrictMode;
 import android.os.SystemClock;
 import android.view.IWindowManager;
+import android.view.Surface;
 
 import com.android.commands.monkey.events.MonkeyEvent;
 import com.android.commands.monkey.events.MonkeyEventSource;
@@ -868,7 +869,7 @@ public class Monkey {
             // Release the rotation lock if it's still held and restore the
             // original orientation.
             Logger.println("// Monkey is over!");
-//            new MonkeyRotationEvent(Surface.ROTATION_0, false).injectEvent(mWm, mAm, mVerbose);
+            new MonkeyRotationEvent(Surface.ROTATION_0, false).injectEvent(mWm, mAm, mVerbose);
         }
 
         if (this.mEventSource instanceof MonkeySourceRandom) {
@@ -1442,6 +1443,7 @@ public class Monkey {
 
         // TO DO : The count should apply to each of the script file.
         while (!systemCrashed) {
+
             // Check user specified stopping condition
             if (mRunningMillis < 0) {
                 if (cycleCounter >= mCount) {

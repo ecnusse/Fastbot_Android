@@ -98,12 +98,10 @@ import com.android.commands.monkey.utils.RandomHelper;
 import com.android.commands.monkey.utils.UUIDHelper;
 import com.android.commands.monkey.utils.Utils;
 import com.bytedance.fastbot.AiClient;
-import com.bytedance.fastbot.OkHttpClient;
 
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileOutputStream;
-import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -909,6 +907,9 @@ public class MonkeySourceApeNative implements MonkeyEventSource {
         if (topActivityName != null && !"".equals(stringOfGuiTree)) {
             try {
                 long rpc_start = System.currentTimeMillis();
+
+                Logger.println("topActivityName: " + topActivityName.getClassName());
+                Logger.println(stringOfGuiTree);
 
                 Operate operate = AiClient.getAction(topActivityName.getClassName(), stringOfGuiTree);
                 operate.throttle += (int) this.mThrottle;

@@ -13,11 +13,22 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 /**
  * @author Zhao Zhang, Yuhui Su
  */
 
+
 apply plugin: 'com.android.library'
+
+configurations {
+    fatJarDependencies {
+        canBeResolved = true
+        canBeConsumed = false
+        // 将 implementation 的所有依赖都包含进来
+        extendsFrom configurations.implementation
+    }
+}
 
 android {
     compileSdkVersion 32
@@ -29,8 +40,9 @@ android {
         versionName "1.0"
         testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
         multiDexEnabled true
+        // ndk push的时候记得把 arm7 和 8 加回去
         ndk {
-            abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'
+            abiFilters 'x86', 'x86_64'
         }
     }
 
@@ -48,8 +60,8 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility 1.8
-        targetCompatibility 1.8
+        sourceCompatibility = "1.8"
+        targetCompatibility = "1.8"
     }
 
     externalNativeBuild {
@@ -68,6 +80,8 @@ android {
 
 }
 
+
+
 repositories {
     maven {
         url "https://dl.google.com/dl/android/maven2/"
@@ -77,6 +91,9 @@ repositories {
 dependencies {
     compileOnly files('libs/framework.jar')
     implementation 'com.google.code.gson:gson:2.8.9'
+    //    implementation 'com.googlecode.jsonrpc4j:jsonrpc4j:1.7.0'
+    implementation 'com.squareup.okhttp3:okhttp:3.12.12'
+    implementation 'org.nanohttpd:nanohttpd:2.3.1'
 }
 
 gradle.projectsEvaluated {
@@ -96,9 +113,16 @@ task clearJar(type: Delete) {
 }
 
 task makeJar(type: Jar) {
-    def srcPath = 'build/intermediates/aar_main_jar/release/'
-    def fileMonkey = file(srcPath+"classes.jar")
+    def srcPath = 'build/intermediates/aar_main_jar/debug/'
+    def fileMonkey = file(srcPath + "classes.jar")
+    // 解压主 jar
     from zipTree(fileMonkey)
+    // 解压 fatJarDependencies 配置里的所有 jar 文件（包括 okhttp3 等依赖）
+    from {
+        configurations.fatJarDependencies.collect { dependency ->
+            dependency.isDirectory() ? dependency : zipTree(dependency)
+        }
+    }
     archiveBaseName = 'monkey'
     destinationDirectory = file("build/libs/")
 }
