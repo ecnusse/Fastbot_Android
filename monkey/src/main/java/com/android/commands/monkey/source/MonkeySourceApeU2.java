@@ -364,7 +364,7 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
             try {
                 Logger.println("等待信号量： stepMonkey");
                 MonkeySemaphore.stepMonkey.acquire();
-                Logger.println("收到信号量： steadb forward tcp:3663 tcp:8090pMonkey");
+                Logger.println("收到信号量： stepMonkey");
                 generateEvents();
             } catch (RuntimeException e) {
                 Logger.errorPrintln(e.getMessage());
@@ -475,12 +475,12 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
     public Element getRootElement(Document tree) {
         NodeList childNodes = tree.getDocumentElement().getChildNodes();
         // traverse the child list backwards to filter the input_method keyboard
-        for (int i = childNodes.getLength() - 1; i >= 0; i--) {
+        for (int i = 0; i < childNodes.getLength(); i++) {
             Node node = childNodes.item(i);
             String cur_package;
             if (node.getNodeType() == Node.ELEMENT_NODE) {
                 cur_package = ((Element) node).getAttribute("package");
-                if (!"com.android.systemui".equals(cur_package)) {
+                if (!"com.android.systemui".equals(cur_package) && !cur_package.contains("inputmethod")) {
                     return (Element) node;
                 }
             }
