@@ -362,9 +362,9 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
         }
         if (!hasEvent()) {
             try {
-                Logger.println("等待信号量： stepMonkey");
+                Logger.println("[MonkeySourceApeU2] 等待信号量: stepMonkey");
                 MonkeySemaphore.stepMonkey.acquire();
-                Logger.println("收到信号量： stepMonkey");
+                Logger.println("[MonkeySourceApeU2] 收到信号量: stepMonkey");
                 generateEvents();
             } catch (RuntimeException e) {
                 Logger.errorPrintln(e.getMessage());
@@ -377,7 +377,7 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
         }
         mEventCount++;
         lastMQEvents = mQ.size();
-        Logger.println("MQ Events Size is " + lastMQEvents);
+//        Logger.println("MQ Events Size is " + lastMQEvents);
         return popEvent();
     }
 
@@ -424,23 +424,29 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
      * }
      */
     public void dumpHierarchy() {
-        String url = client.get_url_builder().addPathSegments("jsonrpc/0").build().toString();
-
-        JsonRPCRequest requestObj = new JsonRPCRequest(
-                "dumpWindowHierarchy",
-                Arrays.asList(false, 50)
-        );
-
         String res;
 
-        try {
-            Response response = client.post(url, gson.toJson(requestObj));
-            res = response.body().string();
-        } catch (IOException e)
-        {
-            throw new RuntimeException(e);
+        if (server.shouldUseCache()){
+            // Use the cached hierarchy response in the server.
+            Logger.println("[MonkeySourceApeU2] Latest event is MonkeyEvent. Use the cached hierarchy.");
+            res = server.getHierarchyResponseCache();
         }
+        else {
+            // Create a new http request to get the hierarchy.
+            String url = client.get_url_builder().addPathSegments("jsonrpc/0").build().toString();
+            JsonRPCRequest requestObj = new JsonRPCRequest(
+                    "dumpWindowHierarchy",
+                    Arrays.asList(false, 50)
+            );
 
+            try {
+                Response hierachyResponse = client.post(url, gson.toJson(requestObj));
+                res = hierachyResponse.body().string();
+            } catch (IOException e)
+            {
+                throw new RuntimeException(e);
+            }
+        }
 
         Logger.println("Successfully Got hierarchy");
 
@@ -457,13 +463,12 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
 
             hierarchy = getRootElement(document);
             TreeBuilder.filterTree(hierarchy);
-            stringOfGuiTree = TreeBuilder.dumpDocumentStrWithOutTree(hierarchy);
+            stringOfGuiTree = hierarchy != null ? TreeBuilder.dumpDocumentStrWithOutTree(hierarchy) : "";
 //            Logger.println(stringOfGuiTree);
         } catch (Exception e){
             e.printStackTrace();
             throw new RuntimeException(e);
         }
-        hierarchy = null;
     }
 
 

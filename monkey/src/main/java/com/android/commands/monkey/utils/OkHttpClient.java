@@ -7,6 +7,7 @@ import okhttp3.MediaType;
 import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
+import okhttp3.logging.HttpLoggingInterceptor;
 
 public class OkHttpClient {
 
@@ -17,8 +18,29 @@ public class OkHttpClient {
 
     private final okhttp3.OkHttpClient client;
 
+    // 日志拦截器，初始化时设定日志级别为 BODY
+    private HttpLoggingInterceptor loggingInterceptor = new HttpLoggingInterceptor(
+            new HttpLoggingInterceptor.Logger() {
+                @Override
+                public void log(String message) {
+                    int maxLength = 300;
+                    if (message != null && message.length() > maxLength) {
+                        // 截取前 maxLength 个字符，加上截断提示
+                        Logger.println(message.substring(0, maxLength) + "...[truncated]");
+                    } else {
+                        Logger.println(message);
+                    }
+                }
+            }
+    );
+
     private OkHttpClient() {
-        client = new okhttp3.OkHttpClient();
+        // 设置日志级别，打印所有请求和响应的详细信息
+        loggingInterceptor.setLevel(HttpLoggingInterceptor.Level.BODY);
+
+        client = new okhttp3.OkHttpClient.Builder()
+                .addInterceptor(loggingInterceptor)
+                .build();
         connect();
     }
 
@@ -44,12 +66,12 @@ public class OkHttpClient {
                 .build();
 
         try {
-            Logger.println("Request: " + request);
+//            Logger.println("Connection Request: " + request);
             Response response = client.newCall(request).execute();
             if (response.body() != null) {
                 String result = response.body().string();
                 // 如果返回内容为 "pong"，则设置 loaded 为 true
-                Logger.println("Response: " + result);
+//                Logger.println("Connection Response: " + result);
                 loaded = "pong".equals(result);
             } else {
                 loaded = false;
@@ -65,26 +87,23 @@ public class OkHttpClient {
         return loaded;
     }
 
-    public Response newCall(Request request) throws IOException{
-        Logger.println("Request: " + request.toString());
+    public Response newCall(Request request) throws IOException {
         Response response = client.newCall(request).execute();
 
         if (!response.isSuccessful()) {
             Logger.errorPrintln("Failed with code:" + response.code());
-        } else {
-            Logger.println("Request success.");
         }
         return response;
     }
 
-    public Response get ( final String url ) throws IOException{
+    public Response get(final String url) throws IOException {
         Request request = new Request.Builder()
                 .url(url)
                 .build();
         return newCall(request);
     }
 
-    public Response post ( final String url, String json) throws IOException{
+    public Response post(final String url, String json) throws IOException {
         RequestBody body = RequestBody.create(JSON, json);
         Request request = new Request.Builder()
                 .url(url)
@@ -93,7 +112,7 @@ public class OkHttpClient {
         return newCall(request);
     }
 
-    public Response delete ( final String url, String json) throws IOException{
+    public Response delete(final String url, String json) throws IOException {
         RequestBody body = RequestBody.create(JSON, json);
         Request request = new Request.Builder()
                 .url(url)
