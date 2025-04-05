@@ -91,6 +91,7 @@ import com.android.commands.monkey.utils.MonkeyUtils;
 import com.android.commands.monkey.utils.OkHttpClient;
 import com.android.commands.monkey.utils.ProxyServer;
 import com.android.commands.monkey.utils.RandomHelper;
+import com.android.commands.monkey.utils.U2Client;
 import com.android.commands.monkey.utils.UUIDHelper;
 import com.bytedance.fastbot.AiClient;
 import com.google.gson.Gson;
@@ -239,6 +240,7 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
     private Element hierarchy;
     private DocumentBuilder documentBuilder;
     private final ProxyServer server;
+    private final U2Client u2Client;
 
     public MonkeySourceApeU2(Random random, List<ComponentName> MainApps,
                                  long throttle, boolean randomizeThrottle, boolean permissionTargetSystem,
@@ -266,7 +268,8 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
         connect();
         Logger.println("// device uuid is " + did);
 
-        this.server = new ProxyServer(8090);
+        this.u2Client = U2Client.getInstance();
+        this.server = new ProxyServer(8090, u2Client);
         try {
             server.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false);
             Logger.println("代理服务器已启动，监听端口：" + 8090);
@@ -432,15 +435,16 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
             res = server.getHierarchyResponseCache();
         }
         else {
-            // Create a new http request to get the hierarchy.
-            String url = client.get_url_builder().addPathSegments("jsonrpc/0").build().toString();
-            JsonRPCRequest requestObj = new JsonRPCRequest(
-                    "dumpWindowHierarchy",
-                    Arrays.asList(false, 50)
-            );
+
+//            // Create a new http request to get the hierarchy.
+//            String url = client.get_url_builder().addPathSegments("jsonrpc/0").build().toString();
+//            JsonRPCRequest requestObj = new JsonRPCRequest(
+//                    "dumpWindowHierarchy",
+//                    Arrays.asList(false, 50)
+//            );
 
             try {
-                Response hierachyResponse = client.post(url, gson.toJson(requestObj));
+                Response hierachyResponse = u2Client.dumpHierarchy();
                 res = hierachyResponse.body().string();
             } catch (IOException e)
             {

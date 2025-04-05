@@ -1,9 +1,6 @@
 package com.android.commands.monkey.utils;
 
-import com.google.gson.Gson;
-
 import java.io.IOException;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -12,7 +9,7 @@ import fi.iki.elonen.NanoHTTPD;
 public class ProxyServer extends NanoHTTPD {
 
     private final OkHttpClient client;
-    private final static Gson gson = new Gson();
+    private final ScriptDriverClient scriptDriverClient;
     private boolean useCache = false;
     private String hierarchyResponseCache;
 
@@ -24,9 +21,10 @@ public class ProxyServer extends NanoHTTPD {
         return this.hierarchyResponseCache;
     }
 
-    public ProxyServer(int port) {
+    public ProxyServer(int port, ScriptDriverClient scriptDriverClient) {
         super(port);
         this.client = OkHttpClient.getInstance();
+        this.scriptDriverClient = scriptDriverClient;
     }
 
     @Override
@@ -75,15 +73,8 @@ public class ProxyServer extends NanoHTTPD {
             throw new RuntimeException(e);
         }
 
-        String url = client.get_url_builder().addPathSegments("jsonrpc/0").build().toString();
-
-        JsonRPCRequest requestObj = new JsonRPCRequest(
-                "dumpWindowHierarchy",
-                Arrays.asList(false, 50)
-        );
-
         try {
-            okhttp3.Response hierarchyResponse = client.post(url, gson.toJson(requestObj));
+            okhttp3.Response hierarchyResponse = scriptDriverClient.dumpHierarchy();
             this.useCache = true;
             return generateServerResponse(hierarchyResponse, true);
         } catch (IOException e) {
