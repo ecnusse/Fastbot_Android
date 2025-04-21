@@ -72,6 +72,7 @@ public class OkHttpClient {
                 String result = response.body().string();
                 // 如果返回内容为 "pong"，则设置 loaded 为 true
 //                Logger.println("Connection Response: " + result);
+                // TODO
                 loaded = "pong".equals(result);
             } else {
                 loaded = false;

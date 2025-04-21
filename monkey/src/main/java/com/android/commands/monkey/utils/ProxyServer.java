@@ -1,8 +1,23 @@
 package com.android.commands.monkey.utils;
 
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.media.ImageWriter;
+
+import com.google.gson.Gson;
+
+import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
+
+import fi.iki.elonen.NanoHTTPD;
+
+import static com.android.commands.monkey.utils.Config.takeScreenshotForEveryStep;
 
 import fi.iki.elonen.NanoHTTPD;
 
@@ -10,8 +25,15 @@ public class ProxyServer extends NanoHTTPD {
 
     private final OkHttpClient client;
     private final ScriptDriverClient scriptDriverClient;
+    private final static Gson gson = new Gson();
     private boolean useCache = false;
     private String hierarchyResponseCache;
+
+    private ImageWriterQueue mImageWriter;
+
+    private ImageWriterQueue getImageWriter() {
+        return mImageWriter;
+    }
 
     public boolean shouldUseCache() {
         return this.useCache;
@@ -25,6 +47,11 @@ public class ProxyServer extends NanoHTTPD {
         super(port);
         this.client = OkHttpClient.getInstance();
         this.scriptDriverClient = scriptDriverClient;
+
+        // start the image writer thread
+        mImageWriter = new ImageWriterQueue();
+        Thread imageThread = new Thread(mImageWriter);
+        imageThread.start();
     }
 
     @Override
@@ -59,6 +86,7 @@ public class ProxyServer extends NanoHTTPD {
         {
             return stepMonkey();
         }
+        Logger.println("[Proxy Server] Forwarding");
         return forward(uri, method, requestBody);
     }
 
@@ -74,7 +102,15 @@ public class ProxyServer extends NanoHTTPD {
         }
 
         try {
+            Logger.println("[ProxyServer] Dumping hierarchy");
             okhttp3.Response hierarchyResponse = scriptDriverClient.dumpHierarchy();
+
+            if (takeScreenshotForEveryStep){
+                Logger.println("[ProxyServer] Taking Screenshot");
+                okhttp3.Response screenshotResponse = scriptDriverClient.takeScreenshot();
+                saveScreenshot(screenshotResponse);
+            }
+
             this.useCache = true;
             return generateServerResponse(hierarchyResponse, true);
         } catch (IOException e) {
@@ -82,6 +118,12 @@ public class ProxyServer extends NanoHTTPD {
         }
     }
 
+    /**
+     * Generate proxy response from the ui automation server, which finally respond to PC
+     * @param okhttpResponse the okhttp3.response from ui automation server
+     * @return The NanoHttpD response
+     * @throws IOException .
+     */
     private Response generateServerResponse(okhttp3.Response okhttpResponse) throws IOException{
         // 读取转发请求返回的响应数据
         if (okhttpResponse != null && okhttpResponse.body() != null) {
@@ -98,10 +140,65 @@ public class ProxyServer extends NanoHTTPD {
             return newFixedLengthResponse(
                     Response.Status.NO_CONTENT,
                     "text/plain",
-                    "");
+                    ""
+            );
         }
     }
 
+    /**
+     * Save the screenshot to /sdcard/screenshots
+     * @param screenshotResponse The okhttp3.Response from ui automation server
+     * @return the screenshot is taken successfully
+     */
+    private boolean saveScreenshot(okhttp3.Response screenshotResponse) {
+        Logger.println("[ProxyServer] Parsing bitmap with base64.");
+        // 获取 Base64 编码的字符串
+        String res;
+        try {
+            res = screenshotResponse.body().string();
+        }
+        catch (IOException e) {
+            Logger.errorPrintln("[ProxyServer] [Error] ");
+            return false;
+        }
+
+        JsonRPCResponse res_obj = gson.fromJson(res, JsonRPCResponse.class);
+        String base64Data = res_obj.getResult();
+
+        // Logger.println("[ProxyServer] Got base64Data: " + base64Data);
+        // Decode the response with android.util.Base64
+        byte[] decodedBytes = android.util.Base64.decode(base64Data, android.util.Base64.DEFAULT);
+
+        Logger.println("[ProxyServer] base64 Decoded");
+        // Parse the bytes into bitmap
+        Bitmap bitmap = BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.length);
+
+        if (bitmap == null){
+            Logger.println("[ProxyServer][Error] Failed to parse screenshot response to bitmap");
+            return false;
+        } else {
+            SimpleDateFormat sdf = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.ENGLISH);
+            String currentDateTime = sdf.format(new Date());
+
+            // create the screenshot file
+            File screenshotFile = new File(
+                "/sdcard/screenshots",
+                String.format(Locale.ENGLISH, "screenshot-%s.png", currentDateTime)
+            );
+            Logger.println("[ProxyServer] Adding the screenshot to ImageWriter");
+            mImageWriter.add(bitmap, screenshotFile);
+            return true;
+        }
+    }
+
+    /**
+     * Generate proxy response from the ui automation server, which finally respond to PC.
+     * Meanwhile, cache the hierarchy to accelerate the stepMonkey request
+     * @param okhttpResponse the okhttp3.response from ui automation server
+     * @param setHierarchyCache cache the hierarchy when doing stepMonkey
+     * @return The NanoHttpD response
+     * @throws IOException .
+     */
     private Response generateServerResponse(okhttp3.Response okhttpResponse, boolean setHierarchyCache) throws IOException{
         // 读取转发请求返回的响应数据
         if (okhttpResponse != null && okhttpResponse.body() != null) {
@@ -150,6 +247,11 @@ public class ProxyServer extends NanoHTTPD {
                         "text/plain",
                         "不支持的 HTTP 方法: " + method);
             }
+
+            // save Screenshot while forwarding the request
+            Logger.println("[Proxy Server] Detected script method, saving screenshot.");
+            okhttp3.Response screenshotResponse = scriptDriverClient.takeScreenshot();
+            saveScreenshot(screenshotResponse);
 
             return generateServerResponse(forwardedResponse);
         } catch (IOException ex) {

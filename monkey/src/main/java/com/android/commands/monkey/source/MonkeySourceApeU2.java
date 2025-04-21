@@ -83,7 +83,6 @@ import com.android.commands.monkey.provider.ShellProvider;
 import com.android.commands.monkey.tree.TreeBuilder;
 import com.android.commands.monkey.utils.Config;
 import com.android.commands.monkey.utils.ImageWriterQueue;
-import com.android.commands.monkey.utils.JsonRPCRequest;
 import com.android.commands.monkey.utils.JsonRPCResponse;
 import com.android.commands.monkey.utils.Logger;
 import com.android.commands.monkey.utils.MonkeySemaphore;
@@ -109,7 +108,6 @@ import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.io.StringReader;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -257,12 +255,14 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
         for (ComponentName app : MainApps) {
             packagePermissions.put(app.getPackageName(), AndroidDevice.getGrantedPermissions(app.getPackageName()));
         }
-        mImageWriters = new ImageWriterQueue[imageWriterCount];
-        for (int i = 0; i < 3; i++) {
-            mImageWriters[i] = new ImageWriterQueue();
-            Thread imageThread = new Thread(mImageWriters[i]);
-            imageThread.start();
-        }
+
+        // TODO Remove the following func? Screenshot is only taken in ProxyServer
+//        mImageWriters = new ImageWriterQueue[imageWriterCount];
+//        for (int i = 0; i < 3; i++) {
+//            mImageWriters[i] = new ImageWriterQueue();
+//            Thread imageThread = new Thread(mImageWriters[i]);
+//            imageThread.start();
+//        }
         getTotalActivities();
 
         connect();
@@ -359,7 +359,7 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
      */
     public MonkeyEvent getNextEvent() {
         checkAppActivity();
-        if (!hasEvent() && lastMQEvents == 1){
+        if (checkMonkeyStepDone()){
             MonkeySemaphore.doneMonkey.release();
             Logger.println("释放信号量： doneMonkey");
         }
@@ -383,6 +383,18 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
 //        Logger.println("MQ Events Size is " + lastMQEvents);
         return popEvent();
     }
+
+    /**
+     * Check if the previous monkey step has been finished.
+     * Algorithm: the event queue is empty and the length of event queue change from 1 to 0
+     * This is for checking an edge case: As fastbot starts, the event queue is empty, but this
+     * does not represent a monkey event was finished.
+     * @return a monkey event was finished
+     */
+    private boolean checkMonkeyStepDone() {
+        return (!hasEvent() && lastMQEvents == 1);
+    }
+
 
     /**
      * generate an activity event
@@ -435,14 +447,6 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
             res = server.getHierarchyResponseCache();
         }
         else {
-
-//            // Create a new http request to get the hierarchy.
-//            String url = client.get_url_builder().addPathSegments("jsonrpc/0").build().toString();
-//            JsonRPCRequest requestObj = new JsonRPCRequest(
-//                    "dumpWindowHierarchy",
-//                    Arrays.asList(false, 50)
-//            );
-
             try {
                 Response hierachyResponse = u2Client.dumpHierarchy();
                 res = hierachyResponse.body().string();
@@ -452,23 +456,23 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
             }
         }
 
-        Logger.println("Successfully Got hierarchy");
+        Logger.println("[MonkeySourceApeU2] Successfully Got hierarchy");
 
         JsonRPCResponse res_obj = gson.fromJson(res, JsonRPCResponse.class);
         String xmlString = res_obj.getResult();
         Document document;
 
         try {
-            // 使用 StringReader 将字符串转换为 InputSource
+            // Use StringReader to transform the String into InputSource
             InputSource is = new InputSource(new StringReader(xmlString));
-            // 解析 InputSource 得到 Document 对象
+            // Parse InputSource to get the Document object
             document = getDocumentBuilder().parse(is);
             document.getDocumentElement().normalize();
 
             hierarchy = getRootElement(document);
             TreeBuilder.filterTree(hierarchy);
             stringOfGuiTree = hierarchy != null ? TreeBuilder.dumpDocumentStrWithOutTree(hierarchy) : "";
-//            Logger.println(stringOfGuiTree);
+            // Logger.println(stringOfGuiTree);
         } catch (Exception e){
             e.printStackTrace();
             throw new RuntimeException(e);
