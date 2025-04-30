@@ -19,7 +19,6 @@ import fi.iki.elonen.NanoHTTPD;
 
 import static com.android.commands.monkey.utils.Config.takeScreenshotForEveryStep;
 
-import fi.iki.elonen.NanoHTTPD;
 
 public class ProxyServer extends NanoHTTPD {
 
@@ -31,9 +30,7 @@ public class ProxyServer extends NanoHTTPD {
 
     private ImageWriterQueue mImageWriter;
 
-    private ImageWriterQueue getImageWriter() {
-        return mImageWriter;
-    }
+    public boolean monkeyIsOver;
 
     public boolean shouldUseCache() {
         return this.useCache;
@@ -85,6 +82,16 @@ public class ProxyServer extends NanoHTTPD {
         if (uri.equals("/stepMonkey") && session.getMethod() == Method.GET)
         {
             return stepMonkey();
+        }
+        else if (uri.equals("/stopMonkey") && session.getMethod() == Method.GET)
+        {
+            monkeyIsOver = true;
+            MonkeySemaphore.stepMonkey.release();
+            return newFixedLengthResponse(
+                Response.Status.OK,
+                "text/plain",
+                "Monkey Stopped"
+            );
         }
         Logger.println("[Proxy Server] Forwarding");
         return forward(uri, method, requestBody);
@@ -220,8 +227,6 @@ public class ProxyServer extends NanoHTTPD {
         }
     }
 
-
-
     private Response forward(String uri, String method, String requestBody){
         // 构造转发URL，这里假设使用 OkHttpClient 的 get_url_builder() 返回的构建器，
         // 将当前请求的 URI 拼接到目标服务地址上。
@@ -263,5 +268,9 @@ public class ProxyServer extends NanoHTTPD {
         finally {
             this.useCache = false;
         }
+    }
+
+    public void tearDown(){
+        mImageWriter.tearDown();
     }
 }

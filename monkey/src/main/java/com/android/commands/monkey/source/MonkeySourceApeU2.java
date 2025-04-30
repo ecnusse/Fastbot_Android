@@ -92,6 +92,7 @@ import com.android.commands.monkey.utils.ProxyServer;
 import com.android.commands.monkey.utils.RandomHelper;
 import com.android.commands.monkey.utils.U2Client;
 import com.android.commands.monkey.utils.UUIDHelper;
+import com.android.commands.monkey.utils.Utils;
 import com.bytedance.fastbot.AiClient;
 import com.google.gson.Gson;
 
@@ -108,6 +109,7 @@ import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.io.StringReader;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -256,13 +258,6 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
             packagePermissions.put(app.getPackageName(), AndroidDevice.getGrantedPermissions(app.getPackageName()));
         }
 
-        // TODO Remove the following func? Screenshot is only taken in ProxyServer
-//        mImageWriters = new ImageWriterQueue[imageWriterCount];
-//        for (int i = 0; i < 3; i++) {
-//            mImageWriters[i] = new ImageWriterQueue();
-//            Thread imageThread = new Thread(mImageWriters[i]);
-//            imageThread.start();
-//        }
         getTotalActivities();
 
         connect();
@@ -272,9 +267,9 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
         this.server = new ProxyServer(8090, u2Client);
         try {
             server.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false);
-            Logger.println("代理服务器已启动，监听端口：" + 8090);
+            Logger.println("[MonkeySourceApeU2] 代理服务器已启动，监听端口：" + 8090);
         } catch (IOException e) {
-            Logger.println("服务器启动失败：" + e.getMessage());
+            Logger.println("[MonkeySourceApeU2] 服务器启动失败：" + e.getMessage());
             e.printStackTrace();
             throw new RuntimeException(e);
         }
@@ -361,13 +356,17 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
         checkAppActivity();
         if (checkMonkeyStepDone()){
             MonkeySemaphore.doneMonkey.release();
-            Logger.println("释放信号量： doneMonkey");
+            Logger.println("[MonkeySourceApeU2] 释放信号量： doneMonkey");
         }
         if (!hasEvent()) {
             try {
                 Logger.println("[MonkeySourceApeU2] 等待信号量: stepMonkey");
                 MonkeySemaphore.stepMonkey.acquire();
                 Logger.println("[MonkeySourceApeU2] 收到信号量: stepMonkey");
+                if (server.monkeyIsOver) {
+                    Logger.println("[MonkeySourceApeU2] Get signal: MonkeyIsOver");
+                    return null;
+                }
                 generateEvents();
             } catch (RuntimeException e) {
                 Logger.errorPrintln(e.getMessage());
@@ -380,7 +379,7 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
         }
         mEventCount++;
         lastMQEvents = mQ.size();
-//        Logger.println("MQ Events Size is " + lastMQEvents);
+        //  Logger.println("MQ Events Size is " + lastMQEvents);
         return popEvent();
     }
 
@@ -1373,10 +1372,44 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
         AiClient.InitAgent(AiClient.AlgorithmType.Reuse, this.packageName);
     }
 
-    public void tearDown() {
-        for (ImageWriterQueue writer : mImageWriters) {
-            writer.tearDown();
+    private void printCoverage() {
+        HashSet<String> set = mTotalActivities;
+
+        Logger.println("Total app activities:");
+        int i = 0;
+        for (String activity : set) {
+            i++;
+            Logger.println(String.format(Locale.ENGLISH,"%4d %s", i, activity));
         }
+
+        String[] testedActivities = this.activityHistory.toArray(new String[0]);
+        Arrays.sort(testedActivities);
+        int j = 0;
+        String activity = "";
+        Logger.println("Explored app activities:");
+        for (i = 0; i < testedActivities.length; i++) {
+            activity = testedActivities[i];
+            if (set.contains(activity)) {
+                Logger.println(String.format(Locale.ENGLISH,"%4d %s", j + 1, activity));
+                j++;
+            }
+        }
+
+        float f = 0;
+        int s = set.size();
+        if (s > 0) {
+            f = 1.0f * j / s * 100;
+            Logger.println("Activity of Coverage: " + f + "%");
+        }
+
+        String[] totalActivities = set.toArray(new String[0]);
+        Arrays.sort(totalActivities);
+        Utils.activityStatistics(mOutputDirectory, testedActivities, totalActivities, new ArrayList<Map<String, String>>(), f, new HashMap<String, Integer>());
+    }
+
+    public void tearDown() {
+        server.tearDown();
+        printCoverage();
     }
 
 }
