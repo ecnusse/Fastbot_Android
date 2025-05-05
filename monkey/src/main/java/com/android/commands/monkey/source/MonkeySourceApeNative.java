@@ -909,7 +909,7 @@ public class MonkeySourceApeNative implements MonkeyEventSource {
                 long rpc_start = System.currentTimeMillis();
 
                 Logger.println("topActivityName: " + topActivityName.getClassName());
-                Logger.println(stringOfGuiTree);
+                // Logger.println(stringOfGuiTree);
 
                 Operate operate = AiClient.getAction(topActivityName.getClassName(), stringOfGuiTree);
                 operate.throttle += (int) this.mThrottle;

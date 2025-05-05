@@ -404,7 +404,13 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
 
     public void connect() {
         client = OkHttpClient.getInstance();
-        client.connect();
+        for (int i = 0; i < 10; i++){
+            sleep(2000);
+            if (client.connect()) {
+                return;
+            }
+        }
+        throw new RuntimeException("Fail to connect to U2Server");
     }
 
     /**
