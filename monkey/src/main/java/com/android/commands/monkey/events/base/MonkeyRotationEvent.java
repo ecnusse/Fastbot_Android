@@ -19,9 +19,13 @@ package com.android.commands.monkey.events.base;
 import android.app.IActivityManager;
 import android.os.RemoteException;
 import android.view.IWindowManager;
-
+import android.os.Build;
+import android.view.Display;
 import com.android.commands.monkey.events.MonkeyEvent;
 import com.android.commands.monkey.utils.Logger;
+
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 
 /**
  * monkey screen rotation event
@@ -52,9 +56,34 @@ public class MonkeyRotationEvent extends MonkeyEvent {
 
         // inject rotation event
         try {
-            iwm.freezeRotation(mRotationDegree);
+
+            if (Build.VERSION.SDK_INT >= 35){
+//                return MonkeyEvent.INJECT_SUCCESS;
+                try{
+                    Class<?> iwmClass = iwm.getClass();
+                    Method freezeMethod = iwmClass.getMethod("freezeDisplayRotation", int.class, int.class, String.class);
+                    freezeMethod.invoke(iwm, Display.DEFAULT_DISPLAY, mRotationDegree, "com.bytedance.fastbot");
+                } catch (InvocationTargetException | IllegalAccessException |
+                         NoSuchMethodException e) {
+                    throw new RuntimeException(e);
+                }
+            }
+            else {
+                iwm.freezeRotation(mRotationDegree);
+            }
             if (!mPersist) {
-                iwm.thawRotation();
+                if (Build.VERSION.SDK_INT >= 35){
+                    try{
+                        Class<?> iwmClass = iwm.getClass();
+                        Method thawMethod = iwmClass.getMethod("thawDisplayRotation", int.class, String.class);
+                        thawMethod.invoke(iwm, Display.DEFAULT_DISPLAY, "com.bytedance.fastbot");
+                    } catch (InvocationTargetException | IllegalAccessException |
+                             NoSuchMethodException e) {
+                        throw new RuntimeException(e);
+                    }
+                } else {
+                    iwm.thawRotation();
+                }
             }
             return MonkeyEvent.INJECT_SUCCESS;
         } catch (RemoteException ex) {
