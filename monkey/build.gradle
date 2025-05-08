@@ -60,8 +60,8 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility = "1.8"
-        targetCompatibility = "1.8"
+        sourceCompatibility = JavaVersion.VERSION_1_8
+        targetCompatibility = JavaVersion.VERSION_1_8
     }
 
     externalNativeBuild {
@@ -93,6 +93,7 @@ dependencies {
     implementation 'com.google.code.gson:gson:2.8.9'
     //    implementation 'com.googlecode.jsonrpc4j:jsonrpc4j:1.7.0'
     implementation 'com.squareup.okhttp3:okhttp:3.12.12'
+    implementation 'com.squareup.okhttp3:logging-interceptor:3.12.12'
     implementation 'org.nanohttpd:nanohttpd:2.3.1'
 }
 
@@ -102,6 +103,7 @@ gradle.projectsEvaluated {
             Set<File> fileSet = options.bootstrapClasspath.getFiles()
             List<File> newFileList = new ArrayList<File>()
             newFileList.add(new File("libs/framework.jar"))
+//            newFileList.add(new File("libs/framework35.jar"))
             newFileList.addAll(fileSet)
             options.bootstrapClasspath = files(newFileList.toArray())
         }
