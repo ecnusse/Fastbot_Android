@@ -98,6 +98,7 @@ import com.google.gson.Gson;
 
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
+import org.w3c.dom.NamedNodeMap;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 import org.xml.sax.InputSource;
@@ -121,6 +122,10 @@ import java.util.Stack;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
+import javax.xml.xpath.XPath;
+import javax.xml.xpath.XPathConstants;
+import javax.xml.xpath.XPathExpressionException;
+import javax.xml.xpath.XPathFactory;
 
 import fi.iki.elonen.NanoHTTPD;
 import okhttp3.Response;
@@ -267,9 +272,9 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
         this.server = new ProxyServer(8090, u2Client);
         try {
             server.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false);
-            Logger.println("[MonkeySourceApeU2] 代理服务器已启动，监听端口：" + 8090);
+            Logger.println("[MonkeySourceApeU2] proxyServer started. Listening tcp:8090");
         } catch (IOException e) {
-            Logger.println("[MonkeySourceApeU2] 服务器启动失败：" + e.getMessage());
+            Logger.println("[MonkeySourceApeU2] Error when trying to start the proxy server：" + e.getMessage());
             e.printStackTrace();
             throw new RuntimeException(e);
         }
@@ -356,15 +361,15 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
         checkAppActivity();
         if (checkMonkeyStepDone()){
             MonkeySemaphore.doneMonkey.release();
-            Logger.println("[MonkeySourceApeU2] 释放信号量： doneMonkey");
+            Logger.println("[MonkeySourceApeU2] release semaphore： doneMonkey");
         }
         if (!hasEvent()) {
             try {
-                Logger.println("[MonkeySourceApeU2] 等待信号量: stepMonkey");
+                Logger.println("[MonkeySourceApeU2] wait semaphore: stepMonkey");
                 MonkeySemaphore.stepMonkey.acquire();
-                Logger.println("[MonkeySourceApeU2] 收到信号量: stepMonkey");
+                Logger.println("[MonkeySourceApeU2] release semaphore: stepMonkey");
                 if (server.monkeyIsOver) {
-                    Logger.println("[MonkeySourceApeU2] Get signal: MonkeyIsOver");
+                    Logger.println("[MonkeySourceApeU2] received signal: MonkeyIsOver");
                     return null;
                 }
                 generateEvents();
@@ -465,6 +470,7 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
 
         JsonRPCResponse res_obj = gson.fromJson(res, JsonRPCResponse.class);
         String xmlString = res_obj.getResult();
+
         Document document;
 
         try {
@@ -474,6 +480,8 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
             document = getDocumentBuilder().parse(is);
             document.getDocumentElement().normalize();
 
+            disableBlockWidgets(document);
+
             hierarchy = getRootElement(document);
             TreeBuilder.filterTree(hierarchy);
             stringOfGuiTree = hierarchy != null ? TreeBuilder.dumpDocumentStrWithOutTree(hierarchy) : "";
@@ -482,6 +490,41 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
             e.printStackTrace();
             throw new RuntimeException(e);
         }
+    }
+
+    /**
+     * Set the block_widgets interaction attrs to false to disable it during fuzzing.
+     * @param document The source xml document.
+     * @throws XPathExpressionException .
+     */
+    private void disableBlockWidgets(Document document) throws XPathExpressionException {
+        // filter the block widgets
+        XPath xpath = XPathFactory.newInstance().newXPath();
+        for (String expr : server.blockWidgets) {
+            NodeList nodes = (NodeList) xpath.evaluate(expr, document, XPathConstants.NODESET);
+            for (int i = 0; i < nodes.getLength(); i++) {
+                Element e = (Element) nodes.item(i);
+                Logger.println("[MonkeySourceApeU2] Disable element: " + getElementAttributes(e));
+                e.setAttribute("clickable", "false");
+                e.setAttribute("long-clickable", "false");
+                e.setAttribute("scrollable", "false");
+                e.setAttribute("checkable", "false");
+                e.setAttribute("enabled", "false");
+                e.setAttribute("focusable", "false");
+
+                // Logger.println("[MonkeySourceApeU2] Disabled element: " + getElementAttributes(e));
+            }
+        }
+    }
+
+    public Map<String, String> getElementAttributes(Element element) {
+        NamedNodeMap attrs = element.getAttributes();
+        Map<String, String> map = new HashMap<>();
+        for (int i = 0; i < attrs.getLength(); i++) {
+            Node attr = attrs.item(i);
+            map.put(attr.getNodeName(), attr.getNodeValue());
+        }
+        return map;
     }
 
 

@@ -2,16 +2,15 @@ package com.android.commands.monkey.utils;
 
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
-import android.media.ImageWriter;
 
 import com.google.gson.Gson;
 
 import java.io.File;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
@@ -31,6 +30,7 @@ public class ProxyServer extends NanoHTTPD {
     private ImageWriterQueue mImageWriter;
 
     public boolean monkeyIsOver;
+    public List<String> blockWidgets;
 
     public boolean shouldUseCache() {
         return this.useCache;
@@ -56,34 +56,7 @@ public class ProxyServer extends NanoHTTPD {
         String method = session.getMethod().name();
         String uri = session.getUri();
 
-        // 用于存储解析请求体数据
-        Map<String, String> files = new HashMap<>();
-        String requestBody = "";
-
-        // 如果请求有请求体（POST、PUT、DELETE等方法），解析 body 数据
-        if (session.getMethod() == Method.POST ||
-                session.getMethod() == Method.PUT ||
-                session.getMethod() == Method.DELETE
-        ) {
-            try {
-                session.parseBody(files);
-                requestBody = files.get("postData");
-                if (requestBody == null) {
-                    requestBody = "";
-                }
-            } catch (IOException | ResponseException e) {
-                return newFixedLengthResponse(
-                        Response.Status.INTERNAL_ERROR,
-                        "text/plain",
-                        "请求体解析错误: " + e.getMessage());
-            }
-        }
-
-        if (uri.equals("/stepMonkey") && session.getMethod() == Method.GET)
-        {
-            return stepMonkey();
-        }
-        else if (uri.equals("/stopMonkey") && session.getMethod() == Method.GET)
+        if (session.getMethod() == Method.GET && uri.equals("/stopMonkey"))
         {
             monkeyIsOver = true;
             MonkeySemaphore.stepMonkey.release();
@@ -93,17 +66,52 @@ public class ProxyServer extends NanoHTTPD {
                 "Monkey Stopped"
             );
         }
+
+        // parse the request body data
+        Map<String, String> data = new HashMap<>();
+        String requestBody = "";
+
+
+        // parse the request body
+        if (session.getMethod() == Method.POST ||
+                session.getMethod() == Method.PUT ||
+                session.getMethod() == Method.DELETE
+        ) {
+            try {
+                session.parseBody(data);
+                requestBody = data.get("postData");
+                if (requestBody == null) {
+                    requestBody = "";
+                }
+            } catch (IOException | ResponseException e) {
+                return newFixedLengthResponse(
+                        Response.Status.INTERNAL_ERROR,
+                        "text/plain",
+                        "Error when parsing post data: " + e.getMessage());
+            }
+        }
+
+        if (uri.equals("/stepMonkey") && session.getMethod() == Method.POST)
+        {
+            StepMonkeyRequest req = new Gson().fromJson(requestBody, StepMonkeyRequest.class);
+            return stepMonkey(req.getBlockWidgets());
+        }
+
         Logger.println("[Proxy Server] Forwarding");
         return forward(uri, method, requestBody);
     }
 
-    private Response stepMonkey(){
-        Logger.println("[ProxyServer] 收到请求: stepMonkey");
+    private Response stepMonkey(List<String> blockWidgets){
+        this.blockWidgets = blockWidgets;
+        Logger.println("[ProxyServer] receive request: stepMonkey");
+        if (!blockWidgets.isEmpty()){
+            Logger.println("              blockWidgets: " + blockWidgets);
+        }
         MonkeySemaphore.stepMonkey.release();
-        Logger.println("[ProxyServer] 释放信号量: stepMonkey");
+        Logger.println("[ProxyServer] release semaphore: stepMonkey");
         try {
             MonkeySemaphore.doneMonkey.acquire();
-            Logger.println("[ProxyServer] 收到信号量: doneMonkey");
+            Logger.println("[ProxyServer] release semaphore: doneMonkey");
         } catch (InterruptedException e) {
             throw new RuntimeException(e);
         }
@@ -207,16 +215,16 @@ public class ProxyServer extends NanoHTTPD {
      * @throws IOException .
      */
     private Response generateServerResponse(okhttp3.Response okhttpResponse, boolean setHierarchyCache) throws IOException{
-        // 读取转发请求返回的响应数据
+        // read the response from the server and generate response
         if (okhttpResponse != null && okhttpResponse.body() != null) {
             String body = okhttpResponse.body().string();
             if (setHierarchyCache) this.hierarchyResponseCache = body;
-            // 查找对应的状态码，不存在时默认为 OK
+            // check the response code
             Response.Status status = Response.Status.lookup(okhttpResponse.code());
             if (status == null) {
                 status = Response.Status.OK;
             }
-            // 尝试从响应中获取 Content-Type，如果为空则默认 "application/json"
+
             String contentType = okhttpResponse.header("Content-Type", "application/json");
             return newFixedLengthResponse(status, contentType, body);
         } else {
@@ -254,9 +262,9 @@ public class ProxyServer extends NanoHTTPD {
             }
 
             // save Screenshot while forwarding the request
-            Logger.println("[Proxy Server] Detected script method, saving screenshot.");
-            okhttp3.Response screenshotResponse = scriptDriverClient.takeScreenshot();
-            saveScreenshot(screenshotResponse);
+//            Logger.println("[Proxy Server] Detected script method, saving screenshot.");
+//            okhttp3.Response screenshotResponse = scriptDriverClient.takeScreenshot();
+//            saveScreenshot(screenshotResponse);
 
             return generateServerResponse(forwardedResponse);
         } catch (IOException ex) {

@@ -1,5 +1,4 @@
 package com.android.commands.monkey.utils;
-
 import java.util.List;
 
 public class JsonRPCRequest {
@@ -23,7 +22,6 @@ public class JsonRPCRequest {
         this.params = params;
     }
 
-    // 如果需要，可以提供 getter 和 setter 方法
     public String getJsonrpc() {
         return jsonrpc;
     }
