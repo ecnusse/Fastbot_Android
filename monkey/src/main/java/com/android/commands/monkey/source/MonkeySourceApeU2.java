@@ -466,10 +466,15 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
             }
         }
 
-        Logger.println("[MonkeySourceApeU2] Successfully Got hierarchy");
 
         JsonRPCResponse res_obj = gson.fromJson(res, JsonRPCResponse.class);
         String xmlString = res_obj.getResult();
+
+        Logger.println("[MonkeySourceApeU2] Successfully Got hierarchy");
+        if (mVerbose > 3) {
+            Logger.println("[MonkeySourceApeU2] The full xmlString is:");
+            Logger.println(xmlString);
+        }
 
         Document document;
 
@@ -485,7 +490,6 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
             hierarchy = getRootElement(document);
             TreeBuilder.filterTree(hierarchy);
             stringOfGuiTree = hierarchy != null ? TreeBuilder.dumpDocumentStrWithOutTree(hierarchy) : "";
-            // Logger.println(stringOfGuiTree);
         } catch (Exception e){
             e.printStackTrace();
             throw new RuntimeException(e);
@@ -541,7 +545,10 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
             String cur_package;
             if (node.getNodeType() == Node.ELEMENT_NODE) {
                 cur_package = ((Element) node).getAttribute("package");
-                if (!"com.android.systemui".equals(cur_package) && !cur_package.contains("inputmethod")) {
+                if (!"com.android.systemui".equals(cur_package) && !cur_package.contains("inputmethod") && !"android".equals(cur_package)) {
+                    if (mVerbose > 3){
+                        Logger.println("[MonkeySourceApeU2] RootElement:"+cur_package);
+                    }
                     return (Element) node;
                 }
             }
@@ -636,7 +643,10 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
         // If node is not null, build tree and recycle this resource.
         if (info != null) {
             stringOfGuiTree = this.stringOfGuiTree;
-            if (mVerbose > 3) Logger.println("//" + stringOfGuiTree);
+            if (mVerbose > 3) {
+                Logger.println("[MonkeySourceApeU2] StringOfGuiTree for agent in fastbot:");
+                Logger.println(stringOfGuiTree);
+            }
             // info.recycle();
         }
 
