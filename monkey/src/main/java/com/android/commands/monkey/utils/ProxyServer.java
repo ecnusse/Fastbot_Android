@@ -4,6 +4,7 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 
 import com.android.commands.monkey.events.MonkeyEventSource;
+import com.android.commands.monkey.events.MonkeyEventSourceU2;
 import com.android.commands.monkey.fastbot.client.Operate;
 import com.android.commands.monkey.source.CoverageData;
 import com.android.commands.monkey.source.MonkeySourceApeU2;
@@ -33,7 +34,7 @@ public class ProxyServer extends NanoHTTPD {
     private final OkHttpClient client;
     private final ScriptDriverClient scriptDriverClient;
     private final static Gson gson = new Gson();
-    private final MonkeySourceApeU2 eventSource;
+    private final MonkeyEventSourceU2 eventSource;
     private boolean useCache = false;
     private String hierarchyResponseCache;
     public boolean takeScreenshots = false;
@@ -66,7 +67,7 @@ public class ProxyServer extends NanoHTTPD {
         return this.hierarchyResponseCache;
     }
 
-    public ProxyServer(int port, ScriptDriverClient scriptDriverClient, MonkeySourceApeU2 eventSource) {
+    public ProxyServer(int port, ScriptDriverClient scriptDriverClient, MonkeyEventSourceU2 eventSource) {
         super(port);
         this.client = OkHttpClient.getInstance();
         this.scriptDriverClient = scriptDriverClient;

@@ -62,6 +62,7 @@ import com.android.commands.monkey.source.MonkeySourceApeNative;
 import com.android.commands.monkey.source.MonkeySourceApeU2;
 import com.android.commands.monkey.source.MonkeySourceRandom;
 import com.android.commands.monkey.source.MonkeySourceRandomScript;
+import com.android.commands.monkey.source.MonkeySourceRandomU2;
 import com.android.commands.monkey.source.MonkeySourceScript;
 import com.android.commands.monkey.utils.Config;
 import com.android.commands.monkey.utils.ContextUtils;
@@ -362,6 +363,11 @@ public class Monkey {
      * use fastbot-u2 q algorithmic decision
      */
     private boolean mUseApeU2;
+
+    /**
+     * use random-u2 decision
+     */
+    private boolean mUseRandomU2;
 
     /**
      * use fastbot-native reuse nq algorithmic decision
@@ -829,7 +835,33 @@ public class Monkey {
                 ((MonkeySourceApeU2) mEventSource).initReuseAgent();
             }
 
-        } else {
+        } else if(mUseRandomU2){
+            // random monkey
+            Logger.println("// runing random-U2");
+
+            if (mVerbose >= 2) { // check seeding performance
+                Logger.println("// Seeded: " + mSeed);
+            }
+            // init framework android device
+            AndroidDevice.initializeAndroidDevice(mAm, mWm, mPm, ime);
+            AndroidDevice.checkInteractive();
+
+            mEventSource = new MonkeySourceRandomU2(mRandom, mMainApps, mThrottle, mRandomizeThrottle, mPermissionTargetSystem, mOutputDirectory, mProfilePeriod);
+            mEventSource.setVerbose(mVerbose);
+
+            ((MonkeySourceRandomU2) mEventSource).setAttr(mMainApps.get(0).getPackageName(), appVersionCode);
+
+            // set any of the factors that has been set
+            for (int i = 0; i < MonkeySourceRandomU2.FACTORZ_COUNT; i++) {
+                if (mFactors[i] <= 0.0f) {
+                    ((MonkeySourceRandomU2) mEventSource).setFactors(i, mFactors[i]);
+                }
+            }
+
+            // in random mode, we start with a random activity
+            ((MonkeySourceRandomU2) mEventSource).generateActivity();
+        }
+        else {
             // random monkey by default
             Logger.println("// runing google monkey mode");
             if (mVerbose >= 2) { // check seeding performance
@@ -892,6 +924,13 @@ public class Monkey {
             new MutationAirplaneEvent().resetStatusAndExecute(mWm, mAm, mVerbose);
             new MutationWifiEvent().resetStatusAndExecute(mWm,mAm,mVerbose);
             ((MonkeySourceApeU2) this.mEventSource).tearDown();
+        }
+
+
+        if (this.mEventSource instanceof MonkeySourceRandomU2) {
+            new MutationAirplaneEvent().resetStatusAndExecute(mWm, mAm, mVerbose);
+            new MutationWifiEvent().resetStatusAndExecute(mWm,mAm,mVerbose);
+            ((MonkeySourceRandomU2) this.mEventSource).tearDown();
         }
 
         // sync handle error information
@@ -1034,6 +1073,13 @@ public class Monkey {
                         break;
                     case "--agent-u2":
                         mUseApeU2 = true;
+                        agentType = nextOptionData();
+                        if ("reuseq".equals(agentType)) {
+                            mUseApeNativeReuse = true;
+                        }
+                        break;
+                    case "--agent-random-u2":
+                        mUseRandomU2 = true;
                         agentType = nextOptionData();
                         if ("reuseq".equals(agentType)) {
                             mUseApeNativeReuse = true;

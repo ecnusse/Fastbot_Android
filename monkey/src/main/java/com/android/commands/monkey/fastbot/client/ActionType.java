@@ -82,9 +82,11 @@ public enum ActionType {
     /**
      * Used for generate shell event
      */
-    SHELL_EVENT;
+    SHELL_EVENT,
     // Enum types above are the same with of cpp, so they should be identical!
     // Enum types below are out of the scope of the c++ native code.
+
+    ROTATE_SCREEN;
 
 
     /**

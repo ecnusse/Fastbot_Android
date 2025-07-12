@@ -58,6 +58,7 @@ import com.android.commands.monkey.events.CustomEventFuzzer;
 import com.android.commands.monkey.events.MonkeyEvent;
 import com.android.commands.monkey.events.MonkeyEventQueue;
 import com.android.commands.monkey.events.MonkeyEventSource;
+import com.android.commands.monkey.events.MonkeyEventSourceU2;
 import com.android.commands.monkey.events.base.MonkeyActivityEvent;
 import com.android.commands.monkey.events.base.MonkeyCommandEvent;
 import com.android.commands.monkey.events.base.MonkeyDataActivityEvent;
@@ -129,7 +130,7 @@ import javax.xml.xpath.XPathFactory;
 import fi.iki.elonen.NanoHTTPD;
 import okhttp3.Response;
 
-public class MonkeySourceApeU2 implements MonkeyEventSource {
+public class MonkeySourceApeU2 implements MonkeyEventSourceU2 {
 
     private static long CLICK_WAIT_TIME = 0L;
     private static long LONG_CLICK_WAIT_TIME = 1000L;
