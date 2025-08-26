@@ -29,6 +29,8 @@ Java_com_bytedance_fastbot_AiClient_nkksdhdk(JNIEnv *env, jobject, jstring activ
 JNIEXPORT jstring JNICALL
 Java_com_bytedance_fastbot_AiClient_getNativeVersion(JNIEnv *env, jclass clazz);
 
+JNIEXPORT void JNICALL Java_com_bytedance_fastbot_AiClient_addCurrentPageAsPrecondition(JNIEnv *env, jobject obj);
+
 #ifdef __cplusplus
 }
 #endif

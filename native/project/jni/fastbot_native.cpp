@@ -93,6 +93,25 @@ jstring JNICALL Java_com_bytedance_fastbot_AiClient_getNativeVersion(JNIEnv *env
     return env->NewStringUTF(FASTBOT_VERSION);
 }
 
+void JNICALL Java_com_bytedance_fastbot_AiClient_addCurrentPageAsPrecondition(JNIEnv *env, jobject obj) {
+    if (_fastbot_model == nullptr) {
+        BLOGE("Model not initialized!");
+        return;
+    }
+
+    // 获取当前的 ModelReusableAgent 实例
+    auto agent = _fastbot_model->getAgent("");
+    auto reuseAgent = std::dynamic_pointer_cast<fastbotx::ModelReusableAgent>(agent);
+
+    if (reuseAgent != nullptr) {
+        reuseAgent->addCurrentPageAsPrecondition();
+        BLOGE("reuseAgent->addCurrentPageAsPrecondition();");
+
+    } else {
+        BLOGE("Failed to cast agent to ModelReusableAgent!");
+    }
+}
+
 #ifdef __cplusplus
 }
 #endif

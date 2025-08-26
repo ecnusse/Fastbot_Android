@@ -12,6 +12,9 @@
 #include "Action.h"
 #include <vector>
 #include <map>
+#include <unordered_map>
+#include <string>
+#include <unordered_set>
 
 namespace fastbotx {
 
@@ -37,6 +40,8 @@ namespace fastbotx {
         static void threadModelStorage(const std::weak_ptr<ModelReusableAgent> &agent);
 
         ~ModelReusableAgent() override;
+
+        void addCurrentPageAsPrecondition();
 
     protected:
         virtual double computeRewardOfLatestAction();
@@ -68,6 +73,12 @@ namespace fastbotx {
 
         ActionPtr selectActionByQValue();
 
+        // 新增：选择基于概率模型的动作
+        ActionPtr selectActionByProbabilityModel();
+
+        // 新增：重新规划路径
+        void replanPath();
+
 
     protected:
         double _alpha{};
@@ -92,6 +103,12 @@ namespace fastbotx {
         double getQValue(const ActionPtr &action);
 
         void setQValue(const ActionPtr &action, double qValue);
+
+        // 新增：记录前置页面的哈希表
+        std::unordered_map<uintptr_t, int> _preconditionPages;
+
+        // 新增：动作概率模型
+        std::unordered_map<uint64_t, double> _actionProbabilities;
     };
 
     typedef std::shared_ptr<ModelReusableAgent> ReuseAgentPtr;

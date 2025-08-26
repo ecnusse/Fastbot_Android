@@ -27,6 +27,8 @@ import fi.iki.elonen.NanoHTTPD;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import com.bytedance.fastbot.AiClient;
+
 
 public class ProxyServer extends NanoHTTPD {
 
@@ -92,6 +94,10 @@ public class ProxyServer extends NanoHTTPD {
                 "text/plain",
                 "Monkey Stopped"
             );
+        }
+
+        if (session.getMethod() == Method.GET && uri.equals("/propertyFirstSatisfied")) {
+            return handlePropertyFirstSatisfied();
         }
 
         // parse the request body data
@@ -194,6 +200,31 @@ public class ProxyServer extends NanoHTTPD {
         }
         Logger.println("[Proxy Server] Forwarding");
         return forward(uri, method, requestBody);
+    }
+
+
+    private Response handlePropertyFirstSatisfied() {
+        try {
+
+            AiClient.addCurrentPageAsPrecondition();
+
+            Logger.println("[ProxyServer] Added current page as precondition");
+
+            return newFixedLengthResponse(
+                    Response.Status.OK,
+                    "text/plain",
+                    "Successfully handling propertyFirstSatisfied:"
+            );
+        } catch (Exception e) {
+            Logger.errorPrintln("[ProxyServer] Error handling propertyFirstSatisfied: " + e.getMessage());
+            e.printStackTrace();
+
+            return newFixedLengthResponse(
+                    Response.Status.INTERNAL_ERROR,
+                    "text/plain",
+                    "{\"status\": \"error\", \"message\": \"" + e.getMessage() + "\"}"
+            );
+        }
     }
 
     public void saveCoverageStatistics(CoverageData coverageData){

@@ -164,4 +164,6 @@ public class AiClient {
         return Operate.fromJson(operateStr);
     }
 
+    public static native void addCurrentPageAsPrecondition();
+
 }

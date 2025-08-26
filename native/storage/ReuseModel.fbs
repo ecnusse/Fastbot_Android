@@ -20,21 +20,24 @@
 
 namespace fastbotx;
 
-table ActivityTimes
-{
-    activity:string;
-    times:int;
+table ActivityTimes {
+    activity: string;
+    times: int;
 }
 
-table ReuseEntry
-{
-    action:ulong (key);
-    targets:[ActivityTimes];
+table PreconditionPage {
+    hashcode: ulong;
+    visited: bool;
 }
 
-table ReuseModel
-{
-    model:[ReuseEntry];
+table ReuseEntry {
+    action: ulong (key);
+    targets: [ActivityTimes];
+}
+
+table ReuseModel {
+    model: [ReuseEntry];
+    precondition_pages: [PreconditionPage];
 }
 
 root_type ReuseModel;
