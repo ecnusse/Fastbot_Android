@@ -28,8 +28,8 @@ import java.util.LinkedList;
 
 public class ImageWriterQueue implements Runnable {
 
-
-    private LinkedList<Req> requestQueue = new LinkedList<Req>();
+    protected LinkedList<Req> requestQueue = new LinkedList<Req>();
+    public String lastImage = "";
 
     @Override
     public void run() {
@@ -46,7 +46,7 @@ public class ImageWriterQueue implements Runnable {
         }
     }
 
-    private void writePNG(Req req) {
+    protected void writePNG(Req req) {
         Bitmap map = req.map;
         File dst = req.dst;
         if (map == null) {
@@ -54,7 +54,7 @@ public class ImageWriterQueue implements Runnable {
             return;
         }
         try (FileOutputStream fos = new FileOutputStream(dst)) {
-            map.compress(Bitmap.CompressFormat.PNG, 85, fos);
+            map.compress(Bitmap.CompressFormat.PNG, 75, fos);
         } catch (IOException e) {
             e.printStackTrace();
             Logger.format("Fail to save screen shot to %s", dst.getAbsolutePath());
@@ -64,6 +64,8 @@ public class ImageWriterQueue implements Runnable {
     }
 
     public synchronized void add(Bitmap map, File dst) {
+        lastImage = dst.getName();
+//        Logger.println("[ImageWriterQueue] Last image: " + lastImage);
         requestQueue.add(new Req(map, dst));
         if (requestQueue.size() > Config.flushImagesThreshold) {
             Logger.format("ImageQueue is too full (%d)! Try to flush it.", requestQueue.size());

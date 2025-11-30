@@ -178,8 +178,23 @@ namespace fastbotx {
 
 
     std::string Element::toJson() const {
-        // nlohmann::json json(this);
-        return "Element ...... ";
+        nlohmann::json j;
+        j["bounds"] = this->getBounds()->toString().c_str();
+        j["index"] = this->getIndex();
+        j["class"] = this->getClassname().c_str();
+        j["resource-id"] = this->getResourceID().c_str();
+        j["package"] =  this->getPackageName().c_str();
+        j["content-desc"] = this->getContentDesc().c_str();
+        j["checkable"] = this->getCheckable() ? "true" : "false";
+        j["checked"] = this->_checked ? "true" : "false";
+        j["clickable"] = this->getClickable() ? "true" : "false";
+        j["enabled"] = this->getEnable() ? "true" : "false";
+        j["focusable"] = this->_focusable ? "true" : "false";
+        j["focused"] = this->_focused ? "true" : "false";
+        j["scrollable"] = this->_scrollable ? "true" : "false";
+        j["long-clickable"] = this->_longClickable ? "true" : "false";
+        j["password"] = this->_password ? "true" : "false";
+        return j.dump();
     }
 
     void Element::recursiveToXML(tinyxml2::XMLElement *xml, const Element *elm) const {

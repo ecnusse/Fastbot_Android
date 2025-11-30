@@ -43,7 +43,6 @@ import android.os.RemoteException;
 import android.os.ServiceManager;
 import android.os.StrictMode;
 import android.os.SystemClock;
-import android.util.Log;
 import android.view.IWindowManager;
 import android.view.Surface;
 
@@ -103,7 +102,7 @@ public class Monkey {
      * <p>
      * All values should be zero when checking in.
      */
-    private static final int DEBUG_ALLOW_ANY_STARTS = 0;
+    private static int DEBUG_ALLOW_ANY_STARTS = 0;
     private static final long ONE_MINUTE_IN_MILLISECOND = 1000 * 60;
     private static final File TOMBSTONES_PATH = new File("/data/tombstones");
     /**
@@ -455,6 +454,8 @@ public class Monkey {
      * Custom quick-application launch intent
      */
     private String mMainQuickAppActivity = null;
+
+    private boolean allowAnyStarts = false;
 
 
     /**
@@ -1191,6 +1192,9 @@ public class Monkey {
                     case "--ime":
                         ime = nextOptionData();
                         break;
+                    case "--allow-any-starts":
+                        allowAnyStarts = true;
+                        break;
                     case "-h":
                         showUsage();
                         return false;
@@ -1425,6 +1429,15 @@ public class Monkey {
         return true;
     }
 
+    private boolean shouldStop(int cycleCounter){
+        // Check user specified stopping condition
+        if (mRunningMillis < 0) {
+            return cycleCounter >= mCount;
+        } else {
+            return SystemClock.elapsedRealtime() > mEndTime;
+        }
+    }
+
     /**
      * Run mCount cycles and see if we hit any crashers.
      *
@@ -1452,18 +1465,6 @@ public class Monkey {
 
         // TO DO : The count should apply to each of the script file.
         while (!systemCrashed) {
-
-            // Check user specified stopping condition
-            if (mRunningMillis < 0) {
-                if (cycleCounter >= mCount) {
-                    break;
-                }
-            } else {
-                currentTime = SystemClock.elapsedRealtime();
-                if (currentTime > mEndTime) {
-                    break;
-                }
-            }
 
             synchronized (this) {
                 if (mRequestHookAppCrashed) {
@@ -1573,6 +1574,9 @@ public class Monkey {
 
             // generate next event and inject it
             MonkeyEvent ev = mEventSource.getNextEvent();
+            if (shouldStop(cycleCounter)){
+                break;
+            }
             if (ev != null) {
                 int injectCode = ev.injectEvent(mWm, mAm, mVerbose);
                 if (injectCode == MonkeyEvent.INJECT_FAIL) {
@@ -1770,6 +1774,7 @@ public class Monkey {
     private void writeDumpLog(String logTimeStamp, String msg) {
         FileWriter fileWriter = null;
 
+
         try {
             fileWriter = new FileWriter(new File(mOutputDirectory + "/" + logTimeStamp + "/", logTimeStamp + ".log").getAbsolutePath(), true);
             fileWriter.write(String.format("%s\n", msg));
@@ -1796,6 +1801,29 @@ public class Monkey {
                     fileWriter.close();
                 } catch (IOException e) {
                     Logger.println("cannot close dump filewriter");
+                }
+            }
+        }
+
+        if (mEventSource instanceof MonkeySourceApeU2){
+            MonkeySourceApeU2 monkeySourceApeU2 = ((MonkeySourceApeU2) mEventSource);
+            String crashScreen = monkeySourceApeU2.peekImageQueue();
+            monkeySourceApeU2.processFailureNScreenshots();
+            msg = String.format("StepsCount: %d\nCrashScreen: %s%s", monkeySourceApeU2.getStepsCount(), crashScreen, msg);
+
+            String outFile = new File(monkeySourceApeU2.getDeviceOutputDir(), "crash-dump.log").getAbsolutePath();
+            try {
+                fileWriter = new FileWriter(outFile, true);
+                fileWriter.write(String.format("%s\n", msg));
+            } catch (IOException e) {
+                Logger.println("cannot write dump msg to " + outFile);
+            } finally {
+                if (fileWriter != null) {
+                    try {
+                        fileWriter.close();
+                    } catch (IOException e) {
+                        Logger.println("cannot close dump filewriter");
+                    }
                 }
             }
         }
@@ -1917,6 +1945,7 @@ public class Monkey {
                 "              [--bugreport]\n" +
                 "              [--periodic-bugreport]\n" +
                 "              [--permission-target-system]\n" +
+                "              [--allow-any-starts]\n" +
                 "              COUNT\n";
         System.err.println(usage);
     }
@@ -1949,6 +1978,7 @@ public class Monkey {
      * Monitor operations happening in the system.
      */
     private class ActivityController extends IActivityController.Stub {
+
 
         public boolean activityStarting(Intent intent, String pkg) {
 
@@ -2011,8 +2041,7 @@ public class Monkey {
                 }
             }
 
-            boolean allow = MonkeyUtils.getPackageFilter().checkEnteringPackage(pkg) && allowActivity || (DEBUG_ALLOW_ANY_STARTS != 0);
-
+            boolean allow = MonkeyUtils.getPackageFilter().checkEnteringPackage(pkg) && allowActivity || (DEBUG_ALLOW_ANY_STARTS != 0) || allowAnyStarts;
 
             if (mVerbose > 0) {
                 // StrictMode's disk checks end up catching this on
@@ -2032,7 +2061,7 @@ public class Monkey {
         public boolean activityResuming(String pkg) {
             StrictMode.ThreadPolicy savedPolicy = StrictMode.allowThreadDiskWrites();
             Logger.println("    // activityResuming(" + pkg + ")");
-            boolean allow = MonkeyUtils.getPackageFilter().checkEnteringPackage(pkg) || (DEBUG_ALLOW_ANY_STARTS != 0);
+            boolean allow = MonkeyUtils.getPackageFilter().checkEnteringPackage(pkg) || (DEBUG_ALLOW_ANY_STARTS != 0) || allowAnyStarts;
 
             if (!allow) {
                 if (mVerbose > 0) {

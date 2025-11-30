@@ -113,6 +113,7 @@ namespace fastbotx {
             retJson["rawInput"] = BOOL_TO_STR(this->rawInput);
             retJson["editable"] = BOOL_TO_STR(this->editable);
             retJson["jAction"] = this->jAction;
+            retJson["widget"] = this->widget;
             ret = retJson.dump();
         }
         catch (nlohmann::json::exception &e) // may some char encoding error

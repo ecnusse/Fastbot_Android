@@ -3,7 +3,7 @@ package com.android.commands.monkey.utils;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 
-import com.android.commands.monkey.events.MonkeyEventSource;
+import com.android.commands.monkey.action.Action;
 import com.android.commands.monkey.fastbot.client.Operate;
 import com.android.commands.monkey.source.CoverageData;
 import com.android.commands.monkey.source.MonkeySourceApeU2;
@@ -36,8 +36,8 @@ public class ProxyServer extends NanoHTTPD {
     private final ScriptDriverClient scriptDriverClient;
     private final static Gson gson = new Gson();
     private final MonkeySourceApeU2 eventSource;
-    private boolean useCache = false;
     private String hierarchyResponseCache;
+    public boolean useCache = false;
     public boolean takeScreenshots = false;
     public String logStamp;
     public int stepsCount = 0;
@@ -45,11 +45,12 @@ public class ProxyServer extends NanoHTTPD {
     private File outputDir;
     private ImageWriterQueue mImageWriter;
 
-
     public boolean monkeyIsOver;
     public List<String> blockWidgets;
 
     public List<String> blockTrees;
+    public int preFailureScreenshots = 0;
+    public int postFailureScreenshots = 0;
 
 //    private CoverageData mCoverageData;
     private int mVerbose = 1;
@@ -60,10 +61,6 @@ public class ProxyServer extends NanoHTTPD {
     // private Operate mOperate;
 
 
-    public boolean shouldUseCache() {
-        return this.useCache;
-    }
-
     public String getHierarchyResponseCache() {
         return this.hierarchyResponseCache;
     }
@@ -73,11 +70,32 @@ public class ProxyServer extends NanoHTTPD {
         this.client = OkHttpClient.getInstance();
         this.scriptDriverClient = scriptDriverClient;
         this.eventSource = eventSource;
+    }
 
-        // start the image writer thread
-        mImageWriter = new ImageWriterQueue();
+    private void startImageWriter(){
+        if (preFailureScreenshots == 0){
+            Logger.println("take all screenshots.");
+            mImageWriter = new ImageWriterQueue();
+        } else {
+            Logger.println(String.format("take %d screenshots before failure", preFailureScreenshots));
+            Logger.println(String.format("take %d screenshots after failure", postFailureScreenshots));
+            mImageWriter = new CacheImageWriterQueue();
+            ((CacheImageWriterQueue) mImageWriter).setCacheSize(preFailureScreenshots);
+            ((CacheImageWriterQueue) mImageWriter).setPostFailureN(postFailureScreenshots);
+        }
         Thread imageThread = new Thread(mImageWriter);
         imageThread.start();
+    }
+
+    public void processFailureNScreenshots() {
+        mImageWriter.flush();
+        if (mImageWriter instanceof CacheImageWriterQueue){
+            ((CacheImageWriterQueue) mImageWriter).resetPostFailureNCounter();
+        }
+    }
+
+    public String peekImageQueue() {
+        return mImageWriter.lastImage;
     }
 
     @Override
@@ -131,16 +149,21 @@ public class ProxyServer extends NanoHTTPD {
             InitRequest req = new Gson().fromJson(requestBody, InitRequest.class);
             takeScreenshots = req.isTakeScreenshots();
             logStamp = req.getLogStamp();
+            preFailureScreenshots = req.getPreFailureScreenshots();
+            postFailureScreenshots = req.getPostFailureScreenshots();
             String deviceOutputRoot = req.getDeviceOutputRoot();
             outputDir = new File(new File(deviceOutputRoot), "output_" + logStamp);
             Logger.println("Init: ");
             Logger.println("    takeScreenshots: " + takeScreenshots);
+            Logger.println("    preFailureScreenshots: " + preFailureScreenshots);
+            Logger.println("    postFailureScreenshots: " + postFailureScreenshots);
             Logger.println("    logStamp: " + logStamp);
             Logger.println("    outputDir: " + outputDir);
             if (!StoneUtils.ensureDir(outputDir)){
                 Logger.errorPrintln("Fail to create output dir: " + outputDir);
                 Logger.errorPrintln("Please specify a valid outputDir");
             }
+            startImageWriter();
             return newFixedLengthResponse(
                     Response.Status.OK,
                     "text/plain",
@@ -166,6 +189,10 @@ public class ProxyServer extends NanoHTTPD {
                     screenshot_file = saveScreenshot(screenshotResponse);
                 }
                 recordLog(jsonRPCBody, screenshot_file);
+                String state = jsonRPCBody.getString("state");
+                if (state.equals("fail") || state.equals("error")){
+                    processFailureNScreenshots();
+                }
             }catch (JSONException e){
                 Logger.println("Error when parsing jsonrpc request body: " + requestBody);
             }
@@ -174,6 +201,10 @@ public class ProxyServer extends NanoHTTPD {
                     "text/plain",
                     "OK"
             );
+        }
+
+        if (uri.equals("/dumpHierarchy")) {
+            return getHierarchyResponse();
         }
 
         if (uri.equals("/jsonrpc/0"))
@@ -189,6 +220,8 @@ public class ProxyServer extends NanoHTTPD {
             }
             String screenshot_file = "";
             if (u2ExtMethods.contains(RPCmethod)){
+                // An ExtMehod will lead to state transition, making the useCache false.
+                this.useCache = false;
                 Logger.println("[Proxy Server] Detected script method: " + RPCmethod);
                 if (takeScreenshots) {
                     okhttp3.Response screenshotResponse = scriptDriverClient.takeScreenshot();
@@ -227,6 +260,10 @@ public class ProxyServer extends NanoHTTPD {
         }
     }
 
+    public File getDeviceOutputDir(){
+        return outputDir;
+    }
+
     public void saveCoverageStatistics(CoverageData coverageData){
         if (mVerbose > 3){
             Logger.println("Saving coverageData: server.stepsCount: " + stepsCount);
@@ -257,15 +294,41 @@ public class ProxyServer extends NanoHTTPD {
             throw new RuntimeException(e);
         }
 
-        try {
-            Logger.println("[ProxyServer] Finish monkey step. Dumping hierarchy");
-            okhttp3.Response hierarchyResponse = scriptDriverClient.dumpHierarchy();
-            String screenshot_file = "";
-            this.useCache = true;
-            return generateServerResponse(hierarchyResponse, true);
-        } catch (IOException e) {
-            throw new RuntimeException(e);
+        Logger.println("[ProxyServer] Finish monkey step. Dumping hierarchy");
+        return getHierarchyResponse();
+    }
+
+    private Response getHierarchyResponse() {
+        okhttp3.Response hierarchyResponse = scriptDriverClient.dumpHierarchy();
+        if (hierarchyResponse != null && hierarchyResponse.body() != null) {
+            String body = null;
+            try {
+                body = hierarchyResponse.body().string();
+            } catch (IOException e) {
+                return getNoContentResponse();
+            }
+            this.hierarchyResponseCache = body;
+            if (!this.hierarchyResponseCache.isEmpty()){
+                this.useCache = true;
+            }
+            // check the response code
+            Response.Status status = Response.Status.lookup(hierarchyResponse.code());
+            if (status == null) {
+                status = Response.Status.OK;
+            }
+            String contentType = hierarchyResponse.header("Content-Type", "application/json");
+            return newFixedLengthResponse(status, contentType, body);
+        } else {
+            return getNoContentResponse();
         }
+    }
+
+    private Response getNoContentResponse(){
+        return newFixedLengthResponse(
+                Response.Status.NO_CONTENT,
+                "text/plain",
+                ""
+        );
     }
 
     private boolean recordLog(Operate op, String screenshot_file){
@@ -275,6 +338,22 @@ public class ProxyServer extends NanoHTTPD {
             obj.put("MonkeyStepsCount", stepsCount);
             obj.put("Time", Logger.getCurrentTimeStamp());
             obj.put("Info", op.toJson());
+            obj.put("Screenshot", screenshot_file);
+            saveLog(obj, "steps.log");
+        } catch (JSONException e){
+            Logger.errorPrintln("Error when recording log.");
+            return false;
+        }
+        return true;
+    }
+
+    private boolean recordLog(Action action, String screenshot_file){
+        JSONObject obj = new JSONObject();
+        try {
+            obj.put("Type", "Fuzz");
+            obj.put("MonkeyStepsCount", stepsCount);
+            obj.put("Time", Logger.getCurrentTimeStamp());
+            obj.put("Info", "FUZZ");
             obj.put("Screenshot", screenshot_file);
             saveLog(obj, "steps.log");
         } catch (JSONException e){
@@ -349,11 +428,7 @@ public class ProxyServer extends NanoHTTPD {
             String contentType = okhttpResponse.header("Content-Type", "application/json");
             return newFixedLengthResponse(status, contentType, body);
         } else {
-            return newFixedLengthResponse(
-                    Response.Status.NO_CONTENT,
-                    "text/plain",
-                    ""
-            );
+            return getNoContentResponse();
         }
     }
 
@@ -372,13 +447,16 @@ public class ProxyServer extends NanoHTTPD {
         }
         catch (IOException e) {
             Logger.errorPrintln("[ProxyServer] [Error]");
-            return null;
+            return "";
         }
 
         JsonRPCResponse res_obj = gson.fromJson(res, JsonRPCResponse.class);
         String base64Data = res_obj.getResult();
 
-        // Logger.println("[ProxyServer] Got base64Data: " + base64Data);
+        if (base64Data == null){
+            Logger.println("[ProxyServer][Error] failed to take the screenshot.");
+            return "";
+        }
         // Decode the response with android.util.Base64
         byte[] decodedBytes = android.util.Base64.decode(base64Data, android.util.Base64.DEFAULT);
 
@@ -389,28 +467,28 @@ public class ProxyServer extends NanoHTTPD {
 
         if (bitmap == null){
             Logger.println("[ProxyServer][Error] Failed to parse screenshot response to bitmap");
-            return null;
-        } else {
-            // Ensure screenshots dir
-            File screenshotDir = new File(outputDir, "screenshots");
-            Logger.println("Screenshots will be saved to: " + screenshotDir);
-            if (!screenshotDir.exists()) {
-                boolean created = screenshotDir.mkdirs();
-                if (!created) {
-                    Logger.println("[ProxyServer][Error] Failed to create screenshots directory");
-                    return null;
-                }
-            }
-
-            // create the screenshot file
-            File screenshotFile = new File(
-                screenshotDir,
-                screenshot_file
-            );
-            Logger.println("[ProxyServer] Adding the screenshot to ImageWriter");
-            mImageWriter.add(bitmap, screenshotFile);
-            return screenshot_file;
+            return "";
         }
+        // Ensure screenshots dir
+        File screenshotDir = new File(outputDir, "screenshots");
+        Logger.println("Screenshots will be saved to: " + screenshotDir);
+        if (!screenshotDir.exists()) {
+            boolean created = screenshotDir.mkdirs();
+            if (!created) {
+                Logger.println("[ProxyServer][Error] Failed to create screenshots directory");
+                return "";
+            }
+        }
+
+        // create the screenshot file
+        File screenshotFile = new File(
+            screenshotDir,
+            screenshot_file
+        );
+        Logger.println("[ProxyServer] Adding the screenshot to ImageWriter");
+        mImageWriter.add(bitmap, screenshotFile);
+        return screenshot_file;
+
     }
 
     private String getScreenshotName(){
@@ -419,35 +497,6 @@ public class ProxyServer extends NanoHTTPD {
         return String.format(Locale.ENGLISH, "screenshot-%d-%s.png", stepsCount, currentDateTime);
     }
 
-    /**
-     * Generate proxy response from the ui automation server, which finally respond to PC.
-     * Meanwhile, cache the hierarchy to accelerate the stepMonkey request
-     * @param okhttpResponse the okhttp3.response from ui automation server
-     * @param setHierarchyCache cache the hierarchy when doing stepMonkey
-     * @return The NanoHttpD response
-     * @throws IOException .
-     */
-    private Response generateServerResponse(okhttp3.Response okhttpResponse, boolean setHierarchyCache) throws IOException{
-        // read the response from the server and generate response
-        if (okhttpResponse != null && okhttpResponse.body() != null) {
-            String body = okhttpResponse.body().string();
-            if (setHierarchyCache) this.hierarchyResponseCache = body;
-            // check the response code
-            Response.Status status = Response.Status.lookup(okhttpResponse.code());
-            if (status == null) {
-                status = Response.Status.OK;
-            }
-
-            String contentType = okhttpResponse.header("Content-Type", "application/json");
-            return newFixedLengthResponse(status, contentType, body);
-        } else {
-            return newFixedLengthResponse(
-                    Response.Status.NO_CONTENT,
-                    "text/plain",
-                    ""
-            );
-        }
-    }
 
     private Response forward(String uri, String method, String requestBody){
         String targetUrl = client.get_url_builder()
@@ -478,9 +527,6 @@ public class ProxyServer extends NanoHTTPD {
                     "text/plain",
                     "Error When forwarding: " + ex.getMessage());
         }
-        finally {
-            this.useCache = false;
-        }
     }
 
     public void tearDown(){
@@ -491,6 +537,10 @@ public class ProxyServer extends NanoHTTPD {
         this.mVerbose = verbose;
     }
 
+    /**
+     * record the monkey action (generated by fastbot AiClient)
+     * @param operate
+     */
     public void recordMonkeyStep(Operate operate) {
         String screenshot_file = "";
         if (takeScreenshots){
@@ -499,5 +549,20 @@ public class ProxyServer extends NanoHTTPD {
             screenshot_file = saveScreenshot(screenshotResponse);
         }
         recordLog(operate, screenshot_file);
+    }
+
+    /**
+     * record the fuzz action
+     * (Different from monkey operation, will be triggered when error in dumping hierarchy)
+     * @param action
+     */
+    public void recordMonkeyStep(Action action){
+        String screenshot_file = "";
+        if (takeScreenshots){
+            Logger.println("[ProxyServer] Taking Screenshot");
+            okhttp3.Response screenshotResponse = scriptDriverClient.takeScreenshot();
+            screenshot_file = saveScreenshot(screenshotResponse);
+        }
+        recordLog(action, screenshot_file);
     }
 }

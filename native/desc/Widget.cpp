@@ -171,6 +171,23 @@ namespace fastbotx {
         return stringStream.str();
     }
 
+    std::string Widget::toJson() const {
+        if (this->_text.empty() && this->_clazz.empty()
+            && this->_resourceID.empty()) {
+            BDLOG("widget detail has been clear");
+            return "";
+        }
+
+        nlohmann::json j;
+        j["index"] = this->_index;
+        j["class"] = this->_clazz;
+        j["resource-id"] = this->_resourceID;
+        j["text"] =  this->_text;
+        j["content-desc"] = this->_contextDesc;
+        j["bounds"] = this->_bounds->toString();
+        return j.dump();
+    }
+
     std::string Widget::buildFullXpath() const {
         std::string fullXpathString = this->toXPath();
         std::shared_ptr<Widget> parent = _parent;

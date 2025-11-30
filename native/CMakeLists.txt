@@ -97,6 +97,9 @@ if (NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE "Release")
 endif()
 
+# compatible with the 16kb page devices
+set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,common-page-size=4096 -Wl,-z,max-page-size=16384")
+
 target_link_libraries(
                fastbot_native
                log

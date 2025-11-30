@@ -6,7 +6,7 @@
  */
 
 #define _DEBUG_ 1
-#define TAG "[Fastbot]"
+#define TAG "[FastbotNative]"
 
 #ifdef __ANDROID__
 

@@ -45,6 +45,8 @@ namespace fastbotx {
 
         std::string toString() const override;
 
+        std::string toJson() const;
+
         std::string buildFullXpath() const;
 
         virtual void clearDetails();

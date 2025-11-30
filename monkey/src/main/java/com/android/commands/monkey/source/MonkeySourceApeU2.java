@@ -80,7 +80,6 @@ import com.android.commands.monkey.provider.SchemaProvider;
 import com.android.commands.monkey.provider.ShellProvider;
 import com.android.commands.monkey.tree.TreeBuilder;
 import com.android.commands.monkey.utils.Config;
-import com.android.commands.monkey.utils.ImageWriterQueue;
 import com.android.commands.monkey.utils.JsonRPCResponse;
 import com.android.commands.monkey.utils.Logger;
 import com.android.commands.monkey.utils.MonkeySemaphore;
@@ -156,10 +155,9 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
      * monkey event queue
      */
     private final MonkeyEventQueue mQ;
-    /**
-     * The last event numbers in MQ.
-     */
-    private int lastMQEvents = 0;
+
+    private int lastProfileStepsCount = 0;
+    private boolean fuzzingStarted = false;
     /**
      * debug level
      */
@@ -185,10 +183,7 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
     private int statusBarHeight = bytestStatusBarHeight;
 
     private File mOutputDirectory;
-    /**
-     * screenshot asynchronous storage queue
-     */
-    private ImageWriterQueue[] mImageWriters;
+
     /**
      * Record tested activities, but there are activities that may miss quick jumps
      */
@@ -284,6 +279,18 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
             e.printStackTrace();
             throw new RuntimeException(e);
         }
+    }
+
+    public File getDeviceOutputDir(){
+        return server.getDeviceOutputDir();
+    }
+
+    public void processFailureNScreenshots() {
+        server.processFailureNScreenshots();
+    }
+
+    public String peekImageQueue() {
+        return server.peekImageQueue();
     }
 
     /**
@@ -391,7 +398,7 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
         if (checkMonkeyStepDone()){
             if (shouldProfile()){
                 Logger.println("[MonkeySourceApeU2] Profiling coverage...");
-                u2GetCoverage();
+                profileCoverage();
             }
             MonkeySemaphore.doneMonkey.release();
             if (mVerbose > 3){
@@ -413,6 +420,7 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
                     return null;
                 }
                 generateEvents();
+                fuzzingStarted = true;
             } catch (RuntimeException e) {
                 Logger.errorPrintln(e.getMessage());
                 e.printStackTrace();
@@ -423,8 +431,6 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
             }
         }
         mEventCount++;
-        lastMQEvents = mQ.size();
-        //  Logger.println("MQ Events Size is " + lastMQEvents);
         return popEvent();
     }
 
@@ -440,8 +446,10 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
      * @return a monkey event was finished
      */
     private boolean checkMonkeyStepDone() {
-        return (!hasEvent() && lastMQEvents == 1);
+        return (!hasEvent() && fuzzingStarted);
     }
+
+    public int getStepsCount() {return server.stepsCount;}
 
 
     /**
@@ -495,7 +503,7 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
     public void dumpHierarchy() {
         String res;
 
-        if (server.shouldUseCache()){
+        if (server.useCache){
             // Use the cached hierarchy response in the server.
             Logger.println("[MonkeySourceApeU2] Latest event is MonkeyEvent. Use the cached hierarchy.");
             res = server.getHierarchyResponseCache();
@@ -509,7 +517,6 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
                 throw new RuntimeException(e);
             }
         }
-
 
         JsonRPCResponse res_obj = gson.fromJson(res, JsonRPCResponse.class);
         String xmlString = res_obj.getResult();
@@ -677,7 +684,6 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
     }
 
     protected void generateEvents() {
-        long start = System.currentTimeMillis();
         if (hasEvent()) {
             return;
         }
@@ -689,9 +695,12 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
         Element info = null;
 
         int repeat = refectchInfoCount;
-        dumpHierarchy();
-        stringOfGuiTree = this.stringOfGuiTree;
-//        Logger.println("Repeat: " + stringOfGuiTree);
+
+        int retry = 2;
+        while ("".equals(stringOfGuiTree) && retry-- > 0){
+            dumpHierarchy();
+            stringOfGuiTree = this.stringOfGuiTree;
+        }
 
         // try to get AccessibilityNodeInfo quickly for several times.
         while (repeat-- > 0) {
@@ -842,6 +851,8 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
                             "accessibility maybe error, fuzz needed."
             );
             fuzzingAction = generateFuzzingAction(fullFuzzing);
+            Logger.println("// Fuzzing action: " + fuzzingAction.toString());
+            server.recordMonkeyStep(fuzzingAction);
             generateEventsForAction(fuzzingAction);
         }
     }
@@ -1542,9 +1553,8 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
         Utils.activityStatistics(mOutputDirectory, testedActivities, totalActivities, new ArrayList<Map<String, String>>(), f, new HashMap<String, Integer>());
     }
 
-    private void u2GetCoverage() {
+    private void profileCoverage() {
         HashSet<String> set = mTotalActivities;
-
         String[] testedActivities = this.activityHistory.toArray(new String[0]);
 
         int j = 0;
@@ -1563,15 +1573,16 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
         }
 
         String[] totalActivities = set.toArray(new String[0]);
-        server.saveCoverageStatistics(
-                new CoverageData(server.stepsCount, f, totalActivities, testedActivities, activityCountHistory)
-        );
+        if (lastProfileStepsCount != server.stepsCount){
+            lastProfileStepsCount = server.stepsCount;
+            server.saveCoverageStatistics(
+                    new CoverageData(server.stepsCount, f, totalActivities, testedActivities, activityCountHistory)
+            );
+        }
     }
 
     public void tearDown() {
-        if (!shouldProfile()){
-            u2GetCoverage();
-        }
+        profileCoverage();
         server.tearDown();
         printCoverage();
     }

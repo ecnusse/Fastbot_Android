@@ -26,6 +26,7 @@ namespace fastbotx {
         bool clear{};
         bool adbInput{};
         std::string name;
+        std::string widget;
 
         DeviceOperateWrapper();
 
