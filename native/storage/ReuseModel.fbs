@@ -28,6 +28,7 @@ table ActivityTimes {
 table PreconditionPage {
     hashcode: ulong;
     visited: bool;
+    score: double; // persisted long-term score for this precondition page
 }
 
 table ReuseEntry {

@@ -8,6 +8,7 @@
 #include "Model.h"
 #include "ModelReusableAgent.h"
 #include "utils.hpp"
+#include <jni.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -50,6 +51,9 @@ void JNICALL Java_com_bytedance_fastbot_AiClient_fgdsaf5d(JNIEnv *env, jobject, 
     if (algorithmType == fastbotx::AlgorithmType::Reuse) {
         auto reuseAgentPtr = std::dynamic_pointer_cast<fastbotx::ModelReusableAgent>(agentPointer);
         reuseAgentPtr->loadReuseModel(std::string(packageNameCString));
+        // Reset per-episode state when initializing the agent for a new run/round
+        reuseAgentPtr->beginNewEpisode();
+        BLOG("Called beginNewEpisode() on reuse agent after load");
         if (env)
             env->ReleaseStringUTFChars(packageName, packageNameCString);
     }
@@ -110,6 +114,16 @@ void JNICALL Java_com_bytedance_fastbot_AiClient_addCurrentPageAsPrecondition(JN
     } else {
         BLOGE("Failed to cast agent to ModelReusableAgent!");
     }
+}
+
+jint JNI_OnLoad(JavaVM* vm, void* reserved) {
+    JNIEnv* env = nullptr;
+    if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
+        return JNI_ERR;
+    }
+    // Log via our macro so it goes to Android logcat under FastbotNative tag
+    BLOG("JNI_OnLoad called, native library initialized");
+    return JNI_VERSION_1_6;
 }
 
 #ifdef __cplusplus

@@ -26,6 +26,14 @@ namespace fastbotx {
     typedef std::map<uint64_t, ReuseEntryM> ReuseEntryIntMap;
     typedef std::map<uint64_t, double> ReuseEntryQValueMap;
 
+    struct PreconditionInfo {
+        bool visited;
+        double score;
+        double ema;
+        PreconditionInfo() : visited(false), score(1.0), ema(0.0) {}
+        PreconditionInfo(bool v, double s, double e) : visited(v), score(s), ema(e) {}
+    };
+
     class ModelReusableAgent : public AbstractAgent {
 
     public:
@@ -42,6 +50,10 @@ namespace fastbotx {
         ~ModelReusableAgent() override;
 
         void addCurrentPageAsPrecondition();
+
+        // New: call this when an external controller starts a new episode/round.
+        // It clears the per-episode covered set and resets per-episode statistics.
+        void beginNewEpisode();
 
     protected:
         virtual double computeRewardOfLatestAction();
@@ -73,10 +85,10 @@ namespace fastbotx {
 
         ActionPtr selectActionByQValue();
 
-        // 新增：选择基于概率模型的动作
+        // New: select actions based on a probability model (prioritize actions likely to reach new activities)
         ActionPtr selectActionByProbabilityModel();
 
-        // 新增：重新规划路径
+        // New: replan path using updated action probabilities
         void replanPath();
 
 
@@ -104,11 +116,25 @@ namespace fastbotx {
 
         void setQValue(const ActionPtr &action, double qValue);
 
-        // 新增：记录前置页面的哈希表
-        std::unordered_map<uintptr_t, int> _preconditionPages;
+        // New: mapping from page hash to PreconditionInfo (replaces previous simple int map)
+        std::unordered_map<uintptr_t, PreconditionInfo> _preconditionPages;
 
-        // 新增：动作概率模型
+        // New: set of precondition pages covered during the current episode
+        std::unordered_set<uintptr_t> _coveredPreconditionsThisEpisode;
+
+        // New: mutex protecting precondition data structures
+        std::mutex _preconditionLock;
+
+        // New: action probability model
         std::unordered_map<uint64_t, double> _actionProbabilities;
+
+        // New: precondition algorithm hyper-parameters (tunable)
+        double _precond_alpha;    // EMA alpha for per-step update (tunable): controls sensitivity to recent visits, range (0,1]. Larger => more sensitive to recent events.
+        double _hit_decay;        // score decay factor when page is hit (tunable): in (0,1], smaller => faster decay of long-term importance.
+        double _min_score;        // score floor (tunable): prevents score from dropping below this value, ensures minimum priority.
+        double _precond_lambda;   // reward multiplier for precondition (tunable): scales the intrinsic reward from covering a precondition page.
+        double _sigmoid_k;        // sigmoid steepness for mappedFreq (tunable): larger => sharper transition around _sigmoid_b.
+        double _sigmoid_b;        // sigmoid center/bias (tunable): the EMA value mapped to 0.5 by the sigmoid.
     };
 
     typedef std::shared_ptr<ModelReusableAgent> ReuseAgentPtr;

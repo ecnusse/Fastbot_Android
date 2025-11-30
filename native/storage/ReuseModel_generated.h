@@ -87,7 +87,8 @@ struct PreconditionPage FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
   typedef PreconditionPageBuilder Builder;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_HASHCODE = 4,
-    VT_VISITED = 6
+    VT_VISITED = 6,
+    VT_SCORE = 8
   };
   uint64_t hashcode() const {
     return GetField<uint64_t>(VT_HASHCODE, 0);
@@ -95,10 +96,14 @@ struct PreconditionPage FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
   bool visited() const {
     return GetField<uint8_t>(VT_VISITED, 0) != 0;
   }
+  double score() const {
+    return GetField<double>(VT_SCORE, 0.0);
+  }
   bool Verify(flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
            VerifyField<uint64_t>(verifier, VT_HASHCODE) &&
            VerifyField<uint8_t>(verifier, VT_VISITED) &&
+           VerifyField<double>(verifier, VT_SCORE) &&
            verifier.EndTable();
   }
 };
@@ -112,6 +117,9 @@ struct PreconditionPageBuilder {
   }
   void add_visited(bool visited) {
     fbb_.AddElement<uint8_t>(PreconditionPage::VT_VISITED, static_cast<uint8_t>(visited), 0);
+  }
+  void add_score(double score) {
+    fbb_.AddElement<double>(PreconditionPage::VT_SCORE, score, 0.0);
   }
   explicit PreconditionPageBuilder(flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
@@ -127,8 +135,10 @@ struct PreconditionPageBuilder {
 inline flatbuffers::Offset<PreconditionPage> CreatePreconditionPage(
     flatbuffers::FlatBufferBuilder &_fbb,
     uint64_t hashcode = 0,
-    bool visited = false) {
+    bool visited = false,
+    double score = 0.0) {
   PreconditionPageBuilder builder_(_fbb);
+  builder_.add_score(score);
   builder_.add_hashcode(hashcode);
   builder_.add_visited(visited);
   return builder_.Finish();

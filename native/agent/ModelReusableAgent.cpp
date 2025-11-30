@@ -23,9 +23,14 @@
 
 namespace fastbotx {
 
+    static inline double sigmoidMap(double x, double k, double b) {
+        return 1.0 / (1.0 + std::exp(-k * (x - b)));
+    }
+
     ModelReusableAgent::ModelReusableAgent(const ModelPtr &model)
             : AbstractAgent(model), _alpha(SarsaRLDefaultAlpha), _epsilon(SarsaRLDefaultEpsilon),
-              _modelSavePath(DefaultModelSavePath), _defaultModelSavePath(DefaultModelSavePath) {
+              _modelSavePath(DefaultModelSavePath), _defaultModelSavePath(DefaultModelSavePath),
+              _precond_alpha(0.2), _hit_decay(0.6), _min_score(0.2), _precond_lambda(0.7), _sigmoid_k(4.0), _sigmoid_b(0.5) {
         this->_algorithmType = AlgorithmType::Reuse;
     }
 
@@ -33,6 +38,16 @@ namespace fastbotx {
         BLOG("save model in destruct");
         this->saveReuseModel(this->_modelSavePath);
         this->_reuseModel.clear();
+    }
+
+    void ModelReusableAgent::beginNewEpisode() {
+        std::lock_guard<std::mutex> guard(this->_preconditionLock);
+        (void)guard;
+        this->_coveredPreconditionsThisEpisode.clear();
+        // reset per-episode ema while keeping long-term score and visited flags
+        for (auto &p : this->_preconditionPages) {
+            p.second.ema = 0.0;
+        }
     }
 
     void ModelReusableAgent::computeAlphaValue() {
@@ -73,17 +88,42 @@ namespace fastbotx {
                                                                  visitedActivities) /
                             sqrt(this->_newState->getVisitedCount() + 1.0));
 
-            // Check if the current page is a precondition page and hasn't been visited before
+            // ------ precondition logic v2.0 ------
             uintptr_t currentPage = this->_newState->hash();
             double preconditionReward = 0.0;
-            double lambda = 0.7; // Weight for precondition pages
-            if (this->_preconditionPages.find(currentPage) != this->_preconditionPages.end() &&
-                this->_preconditionPages[currentPage] == 0) {
-                BLOG("currentPage is %lu", (unsigned long)currentPage);
-                preconditionReward = lambda;
-                this->_preconditionPages[currentPage] = 1; // Mark as visited
+
+            {
+                std::lock_guard<std::mutex> guard(this->_preconditionLock);
+                // update EMA for all known precondition pages (x_t = 1 if current page else 0)
+                for (auto &entry : this->_preconditionPages) {
+                    uintptr_t pageHash = entry.first;
+                    PreconditionInfo &info = entry.second;
+                    int x = (pageHash == currentPage) ? 1 : 0;
+                    info.ema = _precond_alpha * static_cast<double>(x) + (1.0 - _precond_alpha) * info.ema;
+                }
+
+                auto it = this->_preconditionPages.find(currentPage);
+                if (it != this->_preconditionPages.end()) {
+                    PreconditionInfo &info = it->second;
+                    // decay long-term score on arrival to avoid starvation
+                    info.score = std::max(info.score * _hit_decay, _min_score);
+
+                    double mappedFreq = sigmoidMap(info.ema, _sigmoid_k, _sigmoid_b);
+                    double urgency = info.score * (1.0 - mappedFreq);
+
+                    // Only give precondition reward if globally unvisited and not covered this episode
+                    if (!info.visited && this->_coveredPreconditionsThisEpisode.find(currentPage) == this->_coveredPreconditionsThisEpisode.end()) {
+                        preconditionReward = _precond_lambda * urgency;
+                        // mark as covered in this episode and set global visited
+                        this->_coveredPreconditionsThisEpisode.insert(currentPage);
+                        info.visited = true;
+                        BLOG("Precondition covered page %lu, urgency=%f, reward=%f", static_cast<unsigned long>(currentPage), urgency, preconditionReward);
+                    }
+                }
             }
+
             rewardValue += preconditionReward;
+            // ------ end precondition logic ------
 
             BLOG("total visited " ACTIVITY_VC_STR " count is %zu", visitedActivities.size());
         }
@@ -151,7 +191,7 @@ namespace fastbotx {
             BDLOG("%s", "get action value failed!");
         }
         this->_previousActions.emplace_back(this->_newAction);
-        if (this->_previousActions.size() > 5) { // SarsaNStep 定义为 5
+        if (this->_previousActions.size() > 5) { // SarsaNStep defined as 5
             this->_previousActions.erase(this->_previousActions.begin());
         }
     }
@@ -169,6 +209,7 @@ namespace fastbotx {
             return;
         {
             std::lock_guard<std::mutex> reuseGuard(this->_reuseModelLock);
+            (void)reuseGuard;
             auto iter = this->_reuseModel.find(hash);
             if (iter == this->_reuseModel.end()) {
                 BDLOG("can not find action %s in reuse map", modelAction->getId().c_str());
@@ -178,7 +219,6 @@ namespace fastbotx {
             } else {
                 ((*iter).second)[activity] += 1;
             }
-            auto qValueReuseEntryIter = this->_reuseQValue.find(hash);
             this->_reuseQValue[hash] = modelAction->getQValue();
         }
     }
@@ -281,8 +321,7 @@ namespace fastbotx {
     }
 
     ActionPtr ModelReusableAgent::selectUnperformedActionNotInReuseModel() const {
-        ActionPtr retAct = nullptr;
-        std::vector<ActionPtr> actionsNotInModel;
+         std::vector<ActionPtr> actionsNotInModel;
         for (const auto &action : this->_newState->getActions()) {
             bool matched = action->isModelAct() &&
                            (this->_reuseModel.find(action->hash()) == this->_reuseModel.end()) &&
@@ -378,7 +417,7 @@ namespace fastbotx {
     }
 
     void ModelReusableAgent::threadModelStorage(const std::weak_ptr<ModelReusableAgent> &agent) {
-        int saveInterval = 1000 * 60 * 10; // 每10分钟保存一次模型
+        int saveInterval = 1000 * 60 * 10; // save the model every 10 minutes
         while (!agent.expired()) {
             agent.lock()->saveReuseModel(agent.lock()->_modelSavePath);
             std::this_thread::sleep_for(std::chrono::milliseconds(saveInterval));
@@ -414,6 +453,7 @@ namespace fastbotx {
         auto reusedModelDataPtr = reuseFBModel->model();
         if (!reusedModelDataPtr) {
             BLOG("%s", "model data is null");
+            delete[] modelFileData;
             return;
         }
         for (int entryIndex = 0; entryIndex < reusedModelDataPtr->size(); entryIndex++) {
@@ -423,7 +463,7 @@ namespace fastbotx {
             ReuseEntryM entryPtr;
             for (int targetIndex = 0; targetIndex < activityEntry->size(); targetIndex++) {
                 auto targetEntry = activityEntry->Get(targetIndex);
-                BDLOG("load model hash: %llu %s %d", actionHash, targetEntry->activity()->str().c_str(), static_cast<int>(targetEntry->times()));
+                BDLOG("load model hash: %llu %s %d", static_cast<unsigned long long>(actionHash), targetEntry->activity()->str().c_str(), static_cast<int>(targetEntry->times()));
                 entryPtr.insert(std::make_pair(std::make_shared<std::string>(targetEntry->activity()->str()), static_cast<int>(targetEntry->times())));
             }
             if (!entryPtr.empty()) {
@@ -433,19 +473,31 @@ namespace fastbotx {
         }
         BLOG("loaded model contains actions: %zu", this->_reuseModel.size());
 
-        // 添加前置条件页面的读取逻辑
-        if (reuseFBModel->precondition_pages() != nullptr) {
-            auto preconditionPages = reuseFBModel->precondition_pages();
-            for (int i = 0; i < preconditionPages->size(); ++i) {
-                auto page = preconditionPages->Get(i);
-                uintptr_t pageName = (uintptr_t) page->hashcode();
-                bool visited = page->visited();
-                this->_preconditionPages[pageName] = visited;
-                BLOG("Loaded precondition page: %llu, visited: %d", pageName, visited);
+        // read precondition pages (visited and score persisted in flatbuffer schema)
+        {
+            std::lock_guard<std::mutex> guard(this->_preconditionLock);
+            (void)guard;
+            this->_preconditionPages.clear();
+            if (reuseFBModel->precondition_pages() != nullptr) {
+                auto preconditionPages = reuseFBModel->precondition_pages();
+                for (int i = 0; i < preconditionPages->size(); ++i) {
+                    auto page = preconditionPages->Get(i);
+                    uintptr_t pageName = (uintptr_t) page->hashcode();
+                    bool visited = page->visited();
+                    double persistedScore = page->score();
+                    PreconditionInfo info;
+                    info.visited = visited;
+                    // use persisted score if > 0, otherwise default to 1.0
+                    info.score = (persistedScore > 0.0) ? persistedScore : 1.0;
+                    info.ema = 0.0;   // per-episode initialized
+                    this->_preconditionPages[pageName] = info;
+                    BLOG("Loaded precondition page: %lu, visited: %d, score: %f", static_cast<unsigned long>(pageName), visited, info.score);
+                }
+            } else {
+                BLOG("No precondition pages found in the model.");
             }
-        } else {
-            BLOG("No precondition pages found in the model.");
         }
+        // end read precondition pages
 
         delete[] modelFileData;
     }
@@ -458,6 +510,7 @@ namespace fastbotx {
 
         {
             std::lock_guard<std::mutex> reuseGuard(this->_reuseModelLock);
+            (void)reuseGuard;
             for (const auto &actionIterator : this->_reuseModel) {
                 uint64_t actionHash = actionIterator.first;
                 ReuseEntryM activityCountEntryMap = actionIterator.second;
@@ -471,21 +524,25 @@ namespace fastbotx {
             }
         }
 
-        // 添加前置条件页面的保存逻辑
+        // save precondition pages (persist visited flag and score)
         std::vector<flatbuffers::Offset<fastbotx::PreconditionPage>> preconditionPagesVector;
-        BLOG("Precondition pages count ended: %zu", this->_preconditionPages.size());
-        for (const auto &entry : this->_preconditionPages) {
-//            auto pageNameOffset = builder.CreateString(entry.first);
-            auto pageOffset = CreatePreconditionPage(builder, entry.first, entry.second);
-            BLOG("Saved precondition page: %llu, visited: %d", entry.first, entry.second);
-            preconditionPagesVector.push_back(pageOffset);
+        {
+            std::lock_guard<std::mutex> guard(this->_preconditionLock);
+            (void)guard;
+            BLOG("Precondition pages count ended: %zu", this->_preconditionPages.size());
+            for (const auto &entry : this->_preconditionPages) {
+                // persist score along with visited flag
+                auto pageOffset = CreatePreconditionPage(builder, entry.first, entry.second.visited, entry.second.score);
+                BLOG("Saved precondition page: %lu, visited: %d, score: %f", static_cast<unsigned long>(entry.first), entry.second.visited, entry.second.score);
+                preconditionPagesVector.push_back(pageOffset);
+            }
         }
         auto preconditionPagesOffset = builder.CreateVector(preconditionPagesVector.data(), preconditionPagesVector.size());
 
         auto savedReuseModelOffset = CreateReuseModel(
                 builder,
                 builder.CreateVector(actionActivityVector.data(), actionActivityVector.size()),
-                preconditionPagesOffset  // 添加前置条件页面信息
+                preconditionPagesOffset
         );
         builder.Finish(savedReuseModelOffset);
 
@@ -499,26 +556,35 @@ namespace fastbotx {
         outputFile.close();
     }
 
-
-    double ModelReusableAgent::getQValue(const ActionPtr &action) {
-        return action->getQValue();
-    }
-
-    void ModelReusableAgent::setQValue(const ActionPtr &action, double qValue) {
-        action->setQValue(qValue);
-    }
-
     void ModelReusableAgent::addCurrentPageAsPrecondition() {
         if (nullptr != this->_newState) {
             uintptr_t currentPage = this->_newState->hash();
-            if (!_preconditionPages[currentPage]) {
-                _preconditionPages[currentPage] = false; // 标记为未访问
-                BLOG("Added current page as a precondition page: %llu", currentPage);
+            std::lock_guard<std::mutex> guard(this->_preconditionLock);
+            (void)guard;
+            auto it = this->_preconditionPages.find(currentPage);
+            if (it == this->_preconditionPages.end()) {
+                PreconditionInfo info;
+                info.visited = false;
+                info.score = 1.0;
+                info.ema = 0.0;
+                this->_preconditionPages[currentPage] = info;
+                BLOG("Added current page as a precondition page: %lu", static_cast<unsigned long>(currentPage));
             }
         }
         BLOG("Precondition pages count after add: %zu", this->_preconditionPages.size());
     }
 
-}
+    // Restore original behavior: delegate Q storage to Action object
+    double ModelReusableAgent::getQValue(const ActionPtr &action) {
+        if (action == nullptr) return 0.0;
+        return action->getQValue();
+    }
+
+    void ModelReusableAgent::setQValue(const ActionPtr &action, double qValue) {
+        if (action == nullptr) return;
+        action->setQValue(qValue);
+    }
+
+} // namespace fastbotx
 
 #endif /* fastbotx_ModelReusableAgent_CPP_ */
