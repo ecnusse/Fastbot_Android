@@ -27,11 +27,11 @@ namespace fastbotx {
     typedef std::map<uint64_t, double> ReuseEntryQValueMap;
 
     struct PreconditionInfo {
-        bool visited;
         double score;
-        double ema;
-        PreconditionInfo() : visited(false), score(1.0), ema(0.0) {}
-        PreconditionInfo(bool v, double s, double e) : visited(v), score(s), ema(e) {}
+        // List mapping action hash -> successful reach count for this precondition page
+        std::unordered_map<uint64_t, int> actionList;
+        PreconditionInfo() : score(1.0) {}
+        PreconditionInfo(double s) : score(s) {}
     };
 
     class ModelReusableAgent : public AbstractAgent {
@@ -91,6 +91,15 @@ namespace fastbotx {
         // New: replan path using updated action probabilities
         void replanPath();
 
+        // Guidance: select an action guided by precondition action-success probabilities
+        ActionPtr selectGuidedActionForPrecondition();
+
+        // New helper: compute the guidance probability P(A) for action A to reach a precondition page
+        // Formula: P(A) = (count(A->Pre) / total_clicks(A)) * scorePre * Rmulti(A)
+        double computePreconditionActionProbability(uintptr_t pageHash, const ActionPtr &action) const;
+
+        // New helper: check if an action has been tried over the attempt limit during guidance for a page
+        bool isActionOverAttemptLimit(uintptr_t pageHash, uint64_t actionHash) const;
 
     protected:
         double _alpha{};
@@ -135,6 +144,13 @@ namespace fastbotx {
         double _precond_lambda;   // reward multiplier for precondition (tunable): scales the intrinsic reward from covering a precondition page.
         double _sigmoid_k;        // sigmoid steepness for mappedFreq (tunable): larger => sharper transition around _sigmoid_b.
         double _sigmoid_b;        // sigmoid center/bias (tunable): the EMA value mapped to 0.5 by the sigmoid.
+        // Guidance-specific hyperparameters
+        double _guidance_gamma;   // gamma for Rmulti bonus (tunable)
+        int _guidance_action_attempt_limit; // per-action attempt limit during guidance (tunable)
+        int _guidance_history_len; // how many historical actions to record (default 6)
+
+        // runtime: per-precondition per-action attempt counts during guidance phase
+        std::unordered_map<uintptr_t, std::unordered_map<uint64_t, int>> _guidanceAttemptCounts;
     };
 
     typedef std::shared_ptr<ModelReusableAgent> ReuseAgentPtr;

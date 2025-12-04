@@ -25,10 +25,15 @@ table ActivityTimes {
     times: int;
 }
 
+table ActionCounts {
+    action: ulong;
+    times: int;
+}
+
 table PreconditionPage {
     hashcode: ulong;
-    visited: bool;
-    score: double; // persisted long-term score for this precondition page
+    score: double;
+    action_counts: [ActionCounts];
 }
 
 table ReuseEntry {

@@ -17,20 +17,12 @@
 #include <limits>
 #include <mutex>
 #include <utility>
-#include <unordered_map>
-#include <unordered_set>
-#include <string>
 
 namespace fastbotx {
 
-    static inline double sigmoidMap(double x, double k, double b) {
-        return 1.0 / (1.0 + std::exp(-k * (x - b)));
-    }
-
     ModelReusableAgent::ModelReusableAgent(const ModelPtr &model)
             : AbstractAgent(model), _alpha(SarsaRLDefaultAlpha), _epsilon(SarsaRLDefaultEpsilon),
-              _modelSavePath(DefaultModelSavePath), _defaultModelSavePath(DefaultModelSavePath),
-              _precond_alpha(0.2), _hit_decay(0.6), _min_score(0.2), _precond_lambda(0.7), _sigmoid_k(4.0), _sigmoid_b(0.5) {
+              _modelSavePath(DefaultModelSavePath), _defaultModelSavePath(DefaultModelSavePath) {
         this->_algorithmType = AlgorithmType::Reuse;
     }
 
@@ -40,31 +32,36 @@ namespace fastbotx {
         this->_reuseModel.clear();
     }
 
-    void ModelReusableAgent::beginNewEpisode() {
-        std::lock_guard<std::mutex> guard(this->_preconditionLock);
-        (void)guard;
-        this->_coveredPreconditionsThisEpisode.clear();
-        // reset per-episode ema while keeping long-term score and visited flags
-        for (auto &p : this->_preconditionPages) {
-            p.second.ema = 0.0;
-        }
-    }
-
     void ModelReusableAgent::computeAlphaValue() {
         if (nullptr != this->_newState) {
-            const GraphPtr &graphRef = this->_model.lock()->getGraph();
-            long totalVisitCount = graphRef->getTotalDistri();
+            /// actually, the following part of computing alpha could be extracted and treated as a single method
+            const GraphPtr &graphRef = this->_model.lock()->getGraph(); // won't this cause null pointer issue? since the lock of weak_ptr could be null?
+            long totalVisitCount = graphRef->getTotalDistri(); // get the total count of visited states
             double movingAlpha = 0.5;
-            if (totalVisitCount > 20000) movingAlpha -= 0.1;
-            if (totalVisitCount > 50000) movingAlpha -= 0.1;
-            if (totalVisitCount > 100000) movingAlpha -= 0.1;
-            if (totalVisitCount > 250000) movingAlpha -= 0.1;
+            if (totalVisitCount >
+                20000)  // if the total count of visited states is too much, reduce the alpha.
+            {
+                movingAlpha -= 0.1;
+            }
+            if (totalVisitCount > 50000) {
+                movingAlpha -= 0.1;
+            }
+            if (totalVisitCount > 100000) {
+                movingAlpha -= 0.1;
+            }
+            if (totalVisitCount > 250000) {
+                movingAlpha -= 0.1;
+            }
+            // after reducing, the possible minimal alpha is 0.1
+            // but the actually possible minimal alpha is 0.2, the same as SarsaRLDefaultAlpha
             this->_alpha = std::max(SarsaRLDefaultAlpha, movingAlpha);
         }
     }
 
 #define SarsaNStep 5
 
+    /// Based on the lastSelectedAction (newly selected action), compute its reward value
+    /// \return the reward value
     double ModelReusableAgent::computeRewardOfLatestAction() {
         double rewardValue = 0.0;
         if (nullptr != this->_newState) {
@@ -83,48 +80,9 @@ namespace fastbotx {
                     rewardValue = 1.0; // Set the expectation of this action to 1
                 rewardValue = (rewardValue / sqrt(lastSelectedAction->getVisitedCount() + 1.0));
             }
-            // Add the state expectation value part to the reward
-            rewardValue += (this->getStateActionExpectationValue(this->_newState,
-                                                                 visitedActivities) /
-                            sqrt(this->_newState->getVisitedCount() + 1.0));
-
-            // ------ precondition logic v2.0 ------
-            uintptr_t currentPage = this->_newState->hash();
-            double preconditionReward = 0.0;
-
-            {
-                std::lock_guard<std::mutex> guard(this->_preconditionLock);
-                // update EMA for all known precondition pages (x_t = 1 if current page else 0)
-                for (auto &entry : this->_preconditionPages) {
-                    uintptr_t pageHash = entry.first;
-                    PreconditionInfo &info = entry.second;
-                    int x = (pageHash == currentPage) ? 1 : 0;
-                    info.ema = _precond_alpha * static_cast<double>(x) + (1.0 - _precond_alpha) * info.ema;
-                }
-
-                auto it = this->_preconditionPages.find(currentPage);
-                if (it != this->_preconditionPages.end()) {
-                    PreconditionInfo &info = it->second;
-                    // decay long-term score on arrival to avoid starvation
-                    info.score = std::max(info.score * _hit_decay, _min_score);
-
-                    double mappedFreq = sigmoidMap(info.ema, _sigmoid_k, _sigmoid_b);
-                    double urgency = info.score * (1.0 - mappedFreq);
-
-                    // Only give precondition reward if globally unvisited and not covered this episode
-                    if (!info.visited && this->_coveredPreconditionsThisEpisode.find(currentPage) == this->_coveredPreconditionsThisEpisode.end()) {
-                        preconditionReward = _precond_lambda * urgency;
-                        // mark as covered in this episode and set global visited
-                        this->_coveredPreconditionsThisEpisode.insert(currentPage);
-                        info.visited = true;
-                        BLOG("Precondition covered page %lu, urgency=%f, reward=%f", static_cast<unsigned long>(currentPage), urgency, preconditionReward);
-                    }
-                }
-            }
-
-            rewardValue += preconditionReward;
-            // ------ end precondition logic ------
-
+            rewardValue = rewardValue + (this->getStateActionExpectationValue(this->_newState,
+                                                                              visitedActivities) /
+                                         sqrt(this->_newState->getVisitedCount() + 1.0));
             BLOG("total visited " ACTIVITY_VC_STR " count is %zu", visitedActivities.size());
         }
         BDLOG("reuse-cov-opti action reward=%f", rewardValue);
@@ -133,16 +91,28 @@ namespace fastbotx {
         if (this->_rewardCache.size() > SarsaNStep) {
             this->_rewardCache.erase(this->_rewardCache.begin());
         }
-        return rewardValue;
+        return rewardValue;// + this->_newState->getTheta();
     }
 
-    double ModelReusableAgent::probabilityOfVisitingNewActivities(const ActivityStateActionPtr &action, const stringPtrSet &visitedActivities) const {
+    /// Based on the reuse model, compute the probability of this current action visiting a unvisited activity,
+    /// which not in visitedActivities set. This value is the percentage of count of
+    /// activities that this state has not reached compared with the visitedActivities set.
+    /// \param action The chosen action in this state.
+    /// \param visitedActivities A string set, containing already visited activities.
+    /// \return percentage of count of activities that this state has not reached compared with the visitedActivities set.
+    double
+    ModelReusableAgent::probabilityOfVisitingNewActivities(const ActivityStateActionPtr &action,
+                                                           const stringPtrSet &visitedActivities) const {
         double value = .0;
         int total = 0;
         int unvisited = 0;
+        // find this action in this model according to its int hash
+        // according to the given action, get the activities that this action could reach in reuse model.
         auto actionMapIterator = this->_reuseModel.find(action->hash());
         if (actionMapIterator != this->_reuseModel.end()) {
-            for (const auto &activityCountMapIterator : (*actionMapIterator).second) {
+            // Iterate the map containing entry of activity name and visited count
+            // to ascertain the unvisited activity count according to the pre-saved reuse model
+            for (const auto &activityCountMapIterator: (*actionMapIterator).second) {
                 total += activityCountMapIterator.second;
                 stringPtr activity = activityCountMapIterator.first;
                 if (visitedActivities.find(activity) == visitedActivities.end()) {
@@ -156,15 +126,27 @@ namespace fastbotx {
         return value;
     }
 
-    double ModelReusableAgent::getStateActionExpectationValue(const StatePtr &state, const stringPtrSet &visitedActivities) const {
+    /// Return the expectation of reaching an unvisited activity after executing one of the action
+    /// from this state. It estimate the expectation from the perspective of the whole state.
+    /// @param state the newly reached state
+    /// @param visitedActivities the visited activity set AFTER reaching this state(the activity of this
+    ///         state is included)
+    /// @return the expectation of this state reaching an unvisited activity after executing one of the action
+    double ModelReusableAgent::getStateActionExpectationValue(const StatePtr &state,
+                                                              const stringPtrSet &visitedActivities) const {
         double value = 0.0;
-        for (const auto &action : state->getActions()) {
+        for (const auto &action: state->getActions()) {
             uintptr_t actionHash = action->hash();
+            // if this action is new, increment the value by 1, else by 0.5
+            // If this action has not been visited yet.
             if (this->_reuseModel.find(actionHash) == this->_reuseModel.end()) {
                 value += 1.0;
-            } else if (action->getVisitedCount() >= 1) {
+            }                // If this action is been performed in current testing.
+            else if (action->getVisitedCount() >= 1) {
                 value += 0.5;
             }
+            // regardless of the back action
+            // Expectation of reaching an unvisited activity.
             if (action->getTarget() != nullptr) {
                 value += probabilityOfVisitingNewActivities(action, visitedActivities);
             }
@@ -172,85 +154,211 @@ namespace fastbotx {
         return value;
     }
 
+    double ModelReusableAgent::getQValue(const ActionPtr &action) {
+        return action->getQValue();
+    }
+
+    void ModelReusableAgent::setQValue(const ActionPtr &action, double qValue) {
+        action->setQValue(qValue);
+    }
+
+    /// If the new action is generated,
     void ModelReusableAgent::updateStrategy() {
-        if (nullptr == this->_newAction)
+        if (nullptr == this->_newAction) // need to call resolveNewAction to update _newAction
             return;
+        // _previousActions is a vector storing certain amount of actions, of which length equals to SarsaNStep.
         if (!this->_previousActions.empty()) {
             this->computeRewardOfLatestAction();
             this->updateReuseModel();
-//            this->replanPath();
             double value = getQValue(_newAction);
             for (int i = static_cast<int>(this->_previousActions.size()) - 1; i >= 0; i--) {
                 double currentQValue = getQValue(_previousActions[i]);
                 double currentRewardValue = this->_rewardCache[i];
+                // accumulated reward from the newest actions
                 value = currentRewardValue + SarsaRLDefaultGamma * value;
+                // Should not update the q value during step (action edge) between i+1 to i+n-1
+                // The following statement is slightly different from the original sarsa RL paper.
+                // Considering to move the next statement outside of this block.
+                // Since only the oldest action should be updated.
                 if (i == 0)
-                    setQValue(this->_previousActions[i], currentQValue + this->_alpha * (value - currentQValue));
+                    setQValue(this->_previousActions[i],
+                              currentQValue + this->_alpha * (value - currentQValue));
+            }
+
+            // --- Record history of actions to precondition model when arriving at a known precondition page ---
+            // Skip entirely if there is no new state or if the current page is not a persisted precondition page.
+            if (nullptr == this->_newState) {
+                // nothing to do
+            } else {
+                uintptr_t currentPage = this->_newState->hash();
+                uintptr_t lastPage = 0;
+                if (this->_currentState) lastPage = this->_currentState->hash();
+                std::lock_guard<std::mutex> guard(this->_preconditionLock);
+                (void)guard;
+                // Only record history if currentPage already exists in the persisted _preconditionPages map.
+                auto it = this->_preconditionPages.find(currentPage);
+                if (it == this->_preconditionPages.end()) {
+                    // not a known precondition page => do nothing here (do NOT auto-add)
+                } else {
+                    // only record history when we actually just arrived (avoid duplicate records when staying on page)
+                    if (currentPage != lastPage) {
+                        PreconditionInfo &info = it->second;
+                        // collect up to _guidance_history_len historical actions: last N from _previousActions plus _newAction
+                        std::vector<ActionPtr> history;
+                        int need = this->_guidance_history_len - 1; // reserve one slot for _newAction
+                        for (int i = (int)this->_previousActions.size() - 1; i >= 0 && need > 0; --i, --need) {
+                            history.push_back(this->_previousActions[i]);
+                        }
+                        if (this->_newAction != nullptr) history.push_back(this->_newAction);
+                        // record each action's success count for this precondition page
+                        for (auto &a : history) {
+                            if (a == nullptr) continue;
+                            uint64_t ah = static_cast<uint64_t>(a->hash());
+                            info.actionList[ah] += 1;
+                        }
+                        // decay score (long-term importance)
+                        info.score = std::max(info.score * this->_hit_decay, this->_min_score);
+                        BLOG("Recorded %zu history actions for precondition page %lu", history.size(), static_cast<unsigned long>(currentPage));
+                    }
+                    // mark covered this episode so we don't repeatedly guide it
+                    this->_coveredPreconditionsThisEpisode.insert(currentPage);
+                }
             }
         } else {
             BDLOG("%s", "get action value failed!");
         }
+        // add the new action to the back of the cache.
         this->_previousActions.emplace_back(this->_newAction);
-        if (this->_previousActions.size() > 5) { // SarsaNStep defined as 5
+        if (this->_previousActions.size() > SarsaNStep) {
+            // if the cached length is over SarsaNStep, erase the first action from cache.
             this->_previousActions.erase(this->_previousActions.begin());
         }
     }
 
-    void ModelReusableAgent::updateReuseModel() {
-        if (this->_previousActions.empty())
-            return;
-        ActionPtr lastAction = this->_previousActions.back();
-        ActivityNameActionPtr modelAction = std::dynamic_pointer_cast<ActivityNameAction>(lastAction);
-        if (nullptr == modelAction || nullptr == this->_newState)
-            return;
-        auto hash = (uint64_t) modelAction->hash();
-        stringPtr activity = this->_newState->getActivityString();
-        if (activity == nullptr)
-            return;
+    // Guidance: select an action guided by precondition action-success probabilities
+    ActionPtr ModelReusableAgent::selectGuidedActionForPrecondition() {
+        if (nullptr == this->_newState) return nullptr;
+        // quick checks
         {
-            std::lock_guard<std::mutex> reuseGuard(this->_reuseModelLock);
-            (void)reuseGuard;
-            auto iter = this->_reuseModel.find(hash);
-            if (iter == this->_reuseModel.end()) {
-                BDLOG("can not find action %s in reuse map", modelAction->getId().c_str());
-                ReuseEntryM entryMap;
-                entryMap.emplace(std::make_pair(activity, 1));
-                this->_reuseModel[hash] = entryMap;
-            } else {
-                ((*iter).second)[activity] += 1;
+            std::lock_guard<std::mutex> guard(this->_preconditionLock);
+            (void)guard;
+            if (this->_preconditionPages.empty()) return nullptr;
+            // if we've already covered all preconditions this episode, stop guidance
+            if (this->_coveredPreconditionsThisEpisode.size() >= this->_preconditionPages.size()) return nullptr;
+        }
+
+        // New behavior: consider any action on current page that appears in any precondition's actionList.
+        // Map actionHash -> ActionPtr for actions present on current page
+        std::unordered_map<uint64_t, ActionPtr> pageActions;
+        for (auto &action : this->_newState->getActions()) {
+            uint64_t ah = static_cast<uint64_t>(action->hash());
+            pageActions[ah] = action;
+        }
+
+        // For each action on the page, find which precondition pages it can reach (from _preconditionPages)
+        // and compute the best probability for that action (best over target preconditions).
+        double bestOverallP = -1.0;
+        struct Candidate { uint64_t actionHash; ActionPtr action; uintptr_t targetPage; double p; };
+        std::vector<Candidate> candidatesList;
+        const double EPS = 1e-12;
+
+        // iterate precondition pages and match their actionLists against pageActions
+        for (const auto &entry : this->_preconditionPages) {
+            uintptr_t prePage = entry.first;
+            const PreconditionInfo &info = entry.second;
+            if (info.actionList.empty()) continue; // no data for this precondition
+            // Skip prePage if already covered this episode
+            if (this->_coveredPreconditionsThisEpisode.find(prePage) != this->_coveredPreconditionsThisEpisode.end()) continue;
+            for (const auto &ac : info.actionList) {
+                uint64_t ah = ac.first;
+                auto pit = pageActions.find(ah);
+                if (pit == pageActions.end()) continue; // this action not available in current page
+                ActionPtr actionPtr = pit->second;
+                // check attempt limit for this page-action
+                if (isActionOverAttemptLimit(prePage, ah)) continue;
+                // compute probability to reach this precondition via this action
+                double p = computePreconditionActionProbability(prePage, actionPtr);
+                if (p <= 0.0) continue;
+                // record candidate: action may reach this prePage with prob p
+                candidatesList.push_back(Candidate{ah, actionPtr, prePage, p});
+                if (p > bestOverallP + EPS) bestOverallP = p;
             }
-            this->_reuseQValue[hash] = modelAction->getQValue();
         }
-    }
 
-    ActivityStateActionPtr ModelReusableAgent::selectNewActionEpsilonGreedyRandomly() const {
-        if (this->eGreedy()) {
-            BDLOG("%s", "Try to select the max value action");
-            return this->_newState->greedyPickMaxQValue(enableValidValuePriorityFilter);
+        if (candidatesList.empty() || bestOverallP < 0.0) {
+            // no usable guidance candidates found on this page -> fallback
+            return nullptr;
         }
-        BDLOG("%s", "Try to randomly select a value action.");
-        return this->_newState->randomPickAction(enableValidValuePriorityFilter);
+
+        // collect actions that achieve the bestOverallP (within EPS), but we must pick per action the best target page
+        // group by actionHash and choose the target page with max p for that action
+        std::unordered_map<uint64_t, Candidate> bestPerAction;
+        for (auto &c : candidatesList) {
+            auto itb = bestPerAction.find(c.actionHash);
+            if (itb == bestPerAction.end() || c.p > itb->second.p + EPS) {
+                bestPerAction[c.actionHash] = c;
+            }
+        }
+
+        // Now find actions whose bestPerAction.p equals bestOverallP (within EPS)
+        std::vector<Candidate> bestActions;
+        for (const auto &kv : bestPerAction) {
+            const Candidate &c = kv.second;
+            if (std::fabs(c.p - bestOverallP) <= EPS) bestActions.push_back(c);
+        }
+
+        if (bestActions.empty()) return nullptr;
+
+        // tie-break among bestActions uniformly
+        int pickIdx = 0;
+        if (bestActions.size() == 1) pickIdx = 0;
+        else pickIdx = randomInt(0, static_cast<int>(bestActions.size() - 1));
+        Candidate chosen = bestActions[pickIdx];
+
+        // increment attempt count for the chosen page-action pair
+        this->_guidanceAttemptCounts[chosen.targetPage][chosen.actionHash] += 1;
+        BLOG("Guidance chosen action %llu for target precondition page %lu with p=%f attempts=%d", static_cast<unsigned long long>(chosen.actionHash), static_cast<unsigned long>(chosen.targetPage), chosen.p, this->_guidanceAttemptCounts[chosen.targetPage][chosen.actionHash]);
+        return chosen.action;
     }
 
-    bool ModelReusableAgent::eGreedy() const {
-        srand(static_cast<uint32_t>(time(nullptr)));
-        auto r = static_cast<double>(rand() % 100) / 100.0L;
-        return r >= this->_epsilon;
+    // Compute guidance probability P(A) for action A to reach a precondition page
+    // Formula: P(A) = (count(A->Pre) / total_clicks(A)) * scorePre * Rmulti(A)
+    double ModelReusableAgent::computePreconditionActionProbability(uintptr_t pageHash, const ActionPtr &action) const {
+        if (action == nullptr) return 0.0;
+        auto it = this->_preconditionPages.find(pageHash);
+        if (it == this->_preconditionPages.end()) return 0.0;
+        const PreconditionInfo &info = it->second;
+        uint64_t ah = static_cast<uint64_t>(action->hash());
+        auto iter = info.actionList.find(ah);
+        if (iter == info.actionList.end()) return 0.0; // no recorded successes
+        int countToPre = iter->second;
+        int totalClicks = std::max(1, action->getVisitedCount()); // avoid divide by zero
+        double scorePre = info.score;
+        // compute k (number of preconditions this action can reach)
+        int k = 0;
+        for (const auto &p : this->_preconditionPages) {
+            if (p.second.actionList.find(ah) != p.second.actionList.end()) ++k;
+        }
+        double Rmulti = 1.0 + _guidance_gamma * sqrt((double)k);
+        double p = (static_cast<double>(countToPre) / static_cast<double>(totalClicks)) * scorePre * Rmulti;
+        return p;
     }
 
+
+    /// If the new action is generated,
     ActionPtr ModelReusableAgent::selectNewAction() {
         ActionPtr action = nullptr;
+        // First try guided precondition action
+        action = this->selectGuidedActionForPrecondition();
+        if (nullptr != action) {
+            BLOG("select action by precondition guidance");
+            return action;
+        }
         action = this->selectUnperformedActionNotInReuseModel();
         if (nullptr != action) {
             BLOG("%s", "select action not in reuse model");
             return action;
         }
-
-//        action = this->selectActionByProbabilityModel();
-//        if (nullptr != action) {
-//            BLOG("%s", "select action by probability model");
-//            return action;
-//        }
 
         action = this->selectUnperformedActionInReuseModel();
         if (nullptr != action) {
@@ -267,8 +375,6 @@ namespace fastbotx {
         action = this->selectActionByQValue();
         if (nullptr != action) {
             BLOG("%s", "select action by qvalue");
-//            this->_preconditionPages[this->_newState->hash()]++;
-//            BLOG("Page: %lu, visited: %d", (unsigned long) this->_newState->hash(), this->_preconditionPages[this->_newState->hash()]);
             return action;
         }
 
@@ -281,43 +387,21 @@ namespace fastbotx {
         return handleNullAction();
     }
 
-    ActionPtr ModelReusableAgent::selectActionByProbabilityModel() {
-        ActionPtr selectedAction = nullptr;
-        double maxProbability = -1.0;
-        const GraphPtr &graphRef = this->_model.lock()->getGraph();
-        auto visitedActivities = graphRef->getVisitedActivities();
-
-        for (const auto &action : this->_newState->getActions()) {
-            uintptr_t actionHash = action->hash();
-            double probability = this->probabilityOfVisitingNewActivities(action, visitedActivities);
-
-            if (this->_reuseModel.find(actionHash) == this->_reuseModel.end()) {
-                probability = 0.8;
-            }
-
-            if (probability > maxProbability) {
-                maxProbability = probability;
-                selectedAction = action;
-            }
+    ActivityStateActionPtr ModelReusableAgent::selectNewActionEpsilonGreedyRandomly() const {
+        if (this->eGreedy()) {
+            BDLOG("%s", "Try to select the max value action");
+            return this->_newState->greedyPickMaxQValue(enableValidValuePriorityFilter);
         }
-        return selectedAction;
+        BDLOG("%s", "Try to randomly select a value action.");
+        return this->_newState->randomPickAction(enableValidValuePriorityFilter);
     }
 
-    void ModelReusableAgent::replanPath() {
-        if (nullptr != this->_newState) {
-            const GraphPtr &graphRef = this->_model.lock()->getGraph();
-            auto visitedActivities = graphRef->getVisitedActivities();
-
-            for (const auto &action : this->_newState->getActions()) {
-                uintptr_t actionHash = action->hash();
-                if (this->_reuseModel.find(actionHash) != this->_reuseModel.end()) {
-                    double prob = this->probabilityOfVisitingNewActivities(action, visitedActivities);
-                    this->_actionProbabilities[actionHash] = prob;
-                } else {
-                    this->_actionProbabilities[actionHash] = 1.0;
-                }
-            }
-        }
+    bool ModelReusableAgent::eGreedy() const {
+        srand((uint32_t) (int) time(nullptr)); // @TODO the random range
+        auto r = static_cast<double>(static_cast<double>(rand() % 100) / 100.0L);
+        if (r < this->_epsilon)
+            return false;
+        return true;
     }
 
     ActionPtr ModelReusableAgent::selectUnperformedActionNotInReuseModel() const {
@@ -473,7 +557,7 @@ namespace fastbotx {
         }
         BLOG("loaded model contains actions: %zu", this->_reuseModel.size());
 
-        // read precondition pages (visited and score persisted in flatbuffer schema)
+        // read precondition pages (score and action_counts persisted in flatbuffer schema)
         {
             std::lock_guard<std::mutex> guard(this->_preconditionLock);
             (void)guard;
@@ -483,15 +567,23 @@ namespace fastbotx {
                 for (int i = 0; i < preconditionPages->size(); ++i) {
                     auto page = preconditionPages->Get(i);
                     uintptr_t pageName = (uintptr_t) page->hashcode();
-                    bool visited = page->visited();
+                    // NOTE: The persisted schema contains score and action_counts for precondition pages.
                     double persistedScore = page->score();
                     PreconditionInfo info;
-                    info.visited = visited;
                     // use persisted score if > 0, otherwise default to 1.0
                     info.score = (persistedScore > 0.0) ? persistedScore : 1.0;
-                    info.ema = 0.0;   // per-episode initialized
+                    // load action_counts if present
+                    if (page->action_counts() != nullptr) {
+                        auto actionCountsVec = page->action_counts();
+                        for (int j = 0; j < actionCountsVec->size(); ++j) {
+                            auto ac = actionCountsVec->Get(j);
+                            uint64_t ah = ac->action();
+                            int times = ac->times();
+                            info.actionList[ah] = times;
+                        }
+                    }
                     this->_preconditionPages[pageName] = info;
-                    BLOG("Loaded precondition page: %lu, visited: %d, score: %f", static_cast<unsigned long>(pageName), visited, info.score);
+                    BLOG("Loaded precondition page: %lu, score: %f", static_cast<unsigned long>(pageName), info.score);
                 }
             } else {
                 BLOG("No precondition pages found in the model.");
@@ -524,7 +616,7 @@ namespace fastbotx {
             }
         }
 
-        // save precondition pages (persist visited flag and score)
+        // save precondition pages (persist score and action_counts)
         std::vector<flatbuffers::Offset<fastbotx::PreconditionPage>> preconditionPagesVector;
         {
             std::lock_guard<std::mutex> guard(this->_preconditionLock);
@@ -532,8 +624,16 @@ namespace fastbotx {
             BLOG("Precondition pages count ended: %zu", this->_preconditionPages.size());
             for (const auto &entry : this->_preconditionPages) {
                 // persist score along with visited flag
-                auto pageOffset = CreatePreconditionPage(builder, entry.first, entry.second.visited, entry.second.score);
-                BLOG("Saved precondition page: %lu, visited: %d, score: %f", static_cast<unsigned long>(entry.first), entry.second.visited, entry.second.score);
+                std::vector<flatbuffers::Offset<fastbotx::ActionCounts>> actionCountVec;
+                for (const auto &ac : entry.second.actionList) {
+                    auto acOffset = CreateActionCounts(builder, ac.first, ac.second);
+                    actionCountVec.push_back(acOffset);
+                }
+                flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<fastbotx::ActionCounts>>> actionCountsOffset = 0;
+                if (!actionCountVec.empty()) actionCountsOffset = builder.CreateVector(actionCountVec.data(), actionCountVec.size());
+                // Create PreconditionPage with (hashcode, score, action_counts) according to updated schema
+                auto pageOffset = CreatePreconditionPage(builder, entry.first, entry.second.score, actionCountsOffset);
+                BLOG("Saved precondition page: %lu, score: %f, actions=%zu", static_cast<unsigned long>(entry.first), entry.second.score, entry.second.actionList.size());
                 preconditionPagesVector.push_back(pageOffset);
             }
         }
@@ -557,33 +657,70 @@ namespace fastbotx {
     }
 
     void ModelReusableAgent::addCurrentPageAsPrecondition() {
-        if (nullptr != this->_newState) {
-            uintptr_t currentPage = this->_newState->hash();
-            std::lock_guard<std::mutex> guard(this->_preconditionLock);
-            (void)guard;
-            auto it = this->_preconditionPages.find(currentPage);
-            if (it == this->_preconditionPages.end()) {
-                PreconditionInfo info;
-                info.visited = false;
-                info.score = 1.0;
-                info.ema = 0.0;
-                this->_preconditionPages[currentPage] = info;
-                BLOG("Added current page as a precondition page: %lu", static_cast<unsigned long>(currentPage));
-            }
+        if (nullptr == this->_newState) {
+            BLOG("addCurrentPageAsPrecondition: _newState is null");
+            return;
         }
+        uintptr_t currentPage = this->_newState->hash();
+        std::lock_guard<std::mutex> guard(this->_preconditionLock);
+        (void)guard;
+        auto it = this->_preconditionPages.find(currentPage);
+        if (it == this->_preconditionPages.end()) {
+            PreconditionInfo newInfo;
+            newInfo.score = 1.0;
+            this->_preconditionPages[currentPage] = newInfo;
+            BLOG("Added current page as a precondition page: %lu", static_cast<unsigned long>(currentPage));
+        }
+        // mark as covered for this episode to avoid immediate guidance
+        this->_coveredPreconditionsThisEpisode.insert(currentPage);
         BLOG("Precondition pages count after add: %zu", this->_preconditionPages.size());
     }
 
-    // Restore original behavior: delegate Q storage to Action object
-    double ModelReusableAgent::getQValue(const ActionPtr &action) {
-        if (action == nullptr) return 0.0;
-        return action->getQValue();
+    void ModelReusableAgent::beginNewEpisode() {
+        std::lock_guard<std::mutex> guard(this->_preconditionLock);
+        (void)guard;
+        this->_coveredPreconditionsThisEpisode.clear();
+         // reset guidance attempt counts so attempts are per-episode
+         this->_guidanceAttemptCounts.clear();
     }
 
-    void ModelReusableAgent::setQValue(const ActionPtr &action, double qValue) {
-        if (action == nullptr) return;
-        action->setQValue(qValue);
+    // Check whether an action has exceeded guidance attempt limit for a given page
+    bool ModelReusableAgent::isActionOverAttemptLimit(uintptr_t pageHash, uint64_t actionHash) const {
+        auto pit = this->_guidanceAttemptCounts.find(pageHash);
+        if (pit == this->_guidanceAttemptCounts.end()) return false;
+        auto ait = pit->second.find(actionHash);
+        if (ait == pit->second.end()) return false;
+        return ait->second >= this->_guidance_action_attempt_limit;
     }
+
+    void ModelReusableAgent::updateReuseModel() {
+        if (this->_previousActions.empty())
+            return;
+        ActionPtr lastAction = this->_previousActions.back();
+        ActivityNameActionPtr modelAction = std::dynamic_pointer_cast<ActivityNameAction>(
+                lastAction);
+        if (nullptr == modelAction || nullptr == this->_newState)
+            return;
+        auto hash = (uint64_t) modelAction->hash();
+        stringPtr activity = this->_newState->getActivityString(); // mark: use the _newstate as last selected action's target
+        if (activity == nullptr)
+            return;
+        {
+            std::lock_guard<std::mutex> reuseGuard(this->_reuseModelLock);
+            (void)reuseGuard;
+            auto iter = this->_reuseModel.find(hash);
+            if (iter == this->_reuseModel.end()) {
+                BDLOG("can not find action %s in reuse map", modelAction->getId().c_str());
+                ReuseEntryM entryMap;
+                entryMap.emplace(std::make_pair(activity, 1));
+                this->_reuseModel[hash] = entryMap;
+            } else {
+                ((*iter).second)[activity] += 1;
+            }
+            this->_reuseQValue[hash] = modelAction->getQValue();
+        }
+    }
+
 
 } // namespace fastbotx
 

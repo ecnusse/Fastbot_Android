@@ -11,6 +11,9 @@ namespace fastbotx {
 struct ActivityTimes;
 struct ActivityTimesBuilder;
 
+struct ActionCounts;
+struct ActionCountsBuilder;
+
 struct PreconditionPage;
 struct PreconditionPageBuilder;
 
@@ -83,27 +86,80 @@ inline flatbuffers::Offset<ActivityTimes> CreateActivityTimesDirect(
       times);
 }
 
+struct ActionCounts FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
+  typedef ActionCountsBuilder Builder;
+  enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
+    VT_ACTION = 4,
+    VT_TIMES = 6
+  };
+  uint64_t action() const {
+    return GetField<uint64_t>(VT_ACTION, 0);
+  }
+  int32_t times() const {
+    return GetField<int32_t>(VT_TIMES, 0);
+  }
+  bool Verify(flatbuffers::Verifier &verifier) const {
+    return VerifyTableStart(verifier) &&
+           VerifyField<uint64_t>(verifier, VT_ACTION) &&
+           VerifyField<int32_t>(verifier, VT_TIMES) &&
+           verifier.EndTable();
+  }
+};
+
+struct ActionCountsBuilder {
+  typedef ActionCounts Table;
+  flatbuffers::FlatBufferBuilder &fbb_;
+  flatbuffers::uoffset_t start_;
+  void add_action(uint64_t action) {
+    fbb_.AddElement<uint64_t>(ActionCounts::VT_ACTION, action, 0);
+  }
+  void add_times(int32_t times) {
+    fbb_.AddElement<int32_t>(ActionCounts::VT_TIMES, times, 0);
+  }
+  explicit ActionCountsBuilder(flatbuffers::FlatBufferBuilder &_fbb)
+        : fbb_(_fbb) {
+    start_ = fbb_.StartTable();
+  }
+  flatbuffers::Offset<ActionCounts> Finish() {
+    const auto end = fbb_.EndTable(start_);
+    auto o = flatbuffers::Offset<ActionCounts>(end);
+    return o;
+  }
+};
+
+inline flatbuffers::Offset<ActionCounts> CreateActionCounts(
+    flatbuffers::FlatBufferBuilder &_fbb,
+    uint64_t action = 0,
+    int32_t times = 0) {
+  ActionCountsBuilder builder_(_fbb);
+  builder_.add_action(action);
+  builder_.add_times(times);
+  return builder_.Finish();
+}
+
 struct PreconditionPage FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
   typedef PreconditionPageBuilder Builder;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_HASHCODE = 4,
-    VT_VISITED = 6,
-    VT_SCORE = 8
+    VT_SCORE = 6,
+    VT_ACTION_COUNTS = 8
   };
   uint64_t hashcode() const {
     return GetField<uint64_t>(VT_HASHCODE, 0);
   }
-  bool visited() const {
-    return GetField<uint8_t>(VT_VISITED, 0) != 0;
-  }
   double score() const {
     return GetField<double>(VT_SCORE, 0.0);
+  }
+  const flatbuffers::Vector<flatbuffers::Offset<fastbotx::ActionCounts>> *action_counts() const {
+    return GetPointer<const flatbuffers::Vector<flatbuffers::Offset<fastbotx::ActionCounts>> *>(VT_ACTION_COUNTS);
   }
   bool Verify(flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
            VerifyField<uint64_t>(verifier, VT_HASHCODE) &&
-           VerifyField<uint8_t>(verifier, VT_VISITED) &&
            VerifyField<double>(verifier, VT_SCORE) &&
+           VerifyOffset(verifier, VT_ACTION_COUNTS) &&
+           verifier.VerifyVector(action_counts()) &&
+           verifier.VerifyVectorOfTables(action_counts()) &&
            verifier.EndTable();
   }
 };
@@ -115,11 +171,11 @@ struct PreconditionPageBuilder {
   void add_hashcode(uint64_t hashcode) {
     fbb_.AddElement<uint64_t>(PreconditionPage::VT_HASHCODE, hashcode, 0);
   }
-  void add_visited(bool visited) {
-    fbb_.AddElement<uint8_t>(PreconditionPage::VT_VISITED, static_cast<uint8_t>(visited), 0);
-  }
   void add_score(double score) {
     fbb_.AddElement<double>(PreconditionPage::VT_SCORE, score, 0.0);
+  }
+  void add_action_counts(flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<fastbotx::ActionCounts>>> action_counts) {
+    fbb_.AddOffset(PreconditionPage::VT_ACTION_COUNTS, action_counts);
   }
   explicit PreconditionPageBuilder(flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
@@ -135,13 +191,26 @@ struct PreconditionPageBuilder {
 inline flatbuffers::Offset<PreconditionPage> CreatePreconditionPage(
     flatbuffers::FlatBufferBuilder &_fbb,
     uint64_t hashcode = 0,
-    bool visited = false,
-    double score = 0.0) {
+    double score = 0.0,
+    flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<fastbotx::ActionCounts>>> action_counts = 0) {
   PreconditionPageBuilder builder_(_fbb);
   builder_.add_score(score);
   builder_.add_hashcode(hashcode);
-  builder_.add_visited(visited);
+  builder_.add_action_counts(action_counts);
   return builder_.Finish();
+}
+
+inline flatbuffers::Offset<PreconditionPage> CreatePreconditionPageDirect(
+    flatbuffers::FlatBufferBuilder &_fbb,
+    uint64_t hashcode = 0,
+    double score = 0.0,
+    const std::vector<flatbuffers::Offset<fastbotx::ActionCounts>> *action_counts = nullptr) {
+  auto action_counts__ = action_counts ? _fbb.CreateVector<flatbuffers::Offset<fastbotx::ActionCounts>>(*action_counts) : 0;
+  return fastbotx::CreatePreconditionPage(
+      _fbb,
+      hashcode,
+      score,
+      action_counts__);
 }
 
 struct ReuseEntry FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
