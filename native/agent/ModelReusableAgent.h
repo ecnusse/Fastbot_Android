@@ -50,6 +50,8 @@ namespace fastbotx {
         ~ModelReusableAgent() override;
 
         void addCurrentPageAsPrecondition();
+        // Add precondition using an externally provided State (constructed from XML by caller)
+        void addCurrentPageAsPrecondition(const StatePtr &state);
 
         // New: call this when an external controller starts a new episode/round.
         // It clears the per-episode covered set and resets per-episode statistics.

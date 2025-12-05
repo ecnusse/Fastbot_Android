@@ -826,7 +826,7 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
 
                 generateEventsForAction(modelAction);
 
-                // check if could select next fuzz action from full fuzz-able action options.
+                // check if could select next fuzz action from full fuzzing list or simplified fuzzing list.
                 switch (type) {
                     case RESTART:
                     case CLEAN_RESTART:
@@ -1585,6 +1585,48 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
         profileCoverage();
         server.tearDown();
         printCoverage();
+    }
+
+    /**
+     * Ensure current stringOfGuiTree is available and send it to native layer as precondition.
+     * This centralizes the native call so ProxyServer can simply delegate here and reuse
+     * the exact same pageDesc formatting as used by getAction(...).
+     */
+    public boolean sendCurrentPageAsPrecondition() {
+        Logger.println("[MonkeySourceApeU2] sendCurrentPageAsPrecondition: enter");
+        try {
+            // Always refresh hierarchy first (do not use cached stringOfGuiTree at the beginning)
+            Logger.println("[MonkeySourceApeU2] forcing dumpHierarchy() to refresh latest GUI tree");
+            try {
+                this.dumpHierarchy();
+                Logger.println("[MonkeySourceApeU2] dumpHierarchy completed, stringOfGuiTree length=" + (this.stringOfGuiTree == null ? 0 : this.stringOfGuiTree.length()));
+            } catch (Exception ex) {
+                Logger.errorPrintln("[MonkeySourceApeU2] dumpHierarchy failed before sending precondition: " + ex.getMessage());
+            }
+
+            if (this.stringOfGuiTree != null && !this.stringOfGuiTree.isEmpty()) {
+                Logger.println("[MonkeySourceApeU2] calling native addCurrentPageAsPreconditionSync...");
+                boolean ok = AiClient.addCurrentPageAsPreconditionSyncOk(this.stringOfGuiTree);
+                if (ok) {
+                    Logger.println("[MonkeySourceApeU2] Sent current page as precondition to native");
+                    Logger.println("[MonkeySourceApeU2] Precondition XML length: " + this.stringOfGuiTree.length());
+                    Logger.println("[MonkeySourceApeU2] Precondition XML start ---");
+                    Logger.println(this.stringOfGuiTree);
+                    Logger.println("[MonkeySourceApeU2] Precondition XML end ---");
+                    return true;
+                } else {
+                    Logger.errorPrintln("[MonkeySourceApeU2] Native failed to process precondition");
+                    return false;
+                }
+            } else {
+                Logger.errorPrintln("[MonkeySourceApeU2] stringOfGuiTree is empty after forced dump, abort sending precondition");
+                return false;
+            }
+        } catch (Throwable t) {
+            Logger.errorPrintln("[MonkeySourceApeU2] sendCurrentPageAsPrecondition failed: " + t.getMessage());
+            t.printStackTrace();
+            return false;
+        }
     }
 
 }

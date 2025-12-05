@@ -676,6 +676,26 @@ namespace fastbotx {
         BLOG("Precondition pages count after add: %zu", this->_preconditionPages.size());
     }
 
+    void ModelReusableAgent::addCurrentPageAsPrecondition(const StatePtr &state) {
+        if (state == nullptr) {
+            BLOG("addCurrentPageAsPrecondition(state): state is null");
+            return;
+        }
+        uintptr_t currentPage = state->hash();
+        std::lock_guard<std::mutex> guard(this->_preconditionLock);
+        (void)guard;
+        auto it = this->_preconditionPages.find(currentPage);
+        if (it == this->_preconditionPages.end()) {
+            PreconditionInfo newInfo;
+            newInfo.score = 1.0;
+            this->_preconditionPages[currentPage] = newInfo;
+            BLOG("Added current page (from external state) as a precondition page: %lu", static_cast<unsigned long>(currentPage));
+        } else {
+            BLOG("addCurrentPageAsPrecondition(state): page already present %lu", static_cast<unsigned long>(currentPage));
+        }
+        this->_coveredPreconditionsThisEpisode.insert(currentPage);
+    }
+
     void ModelReusableAgent::beginNewEpisode() {
         std::lock_guard<std::mutex> guard(this->_preconditionLock);
         (void)guard;
