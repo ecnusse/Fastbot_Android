@@ -632,7 +632,7 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
             String cur_package;
             if (node.getNodeType() == Node.ELEMENT_NODE) {
                 cur_package = ((Element) node).getAttribute("package");
-                if (!"com.android.systemui".equals(cur_package) && !cur_package.contains("inputmethod") && !"android".equals(cur_package)) {
+                if (!"com.android.systemui".equals(cur_package) && !cur_package.contains("inputmethod") && !"android".equals(cur_package) && !cur_package.contains("gesture")) {
                     if (mVerbose > 3){
                         Logger.println("[MonkeySourceApeU2] RootElement:"+cur_package);
                     }

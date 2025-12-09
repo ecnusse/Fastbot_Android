@@ -656,25 +656,25 @@ namespace fastbotx {
         outputFile.close();
     }
 
-    void ModelReusableAgent::addCurrentPageAsPrecondition() {
-        if (nullptr == this->_newState) {
-            BLOG("addCurrentPageAsPrecondition: _newState is null");
-            return;
-        }
-        uintptr_t currentPage = this->_newState->hash();
-        std::lock_guard<std::mutex> guard(this->_preconditionLock);
-        (void)guard;
-        auto it = this->_preconditionPages.find(currentPage);
-        if (it == this->_preconditionPages.end()) {
-            PreconditionInfo newInfo;
-            newInfo.score = 1.0;
-            this->_preconditionPages[currentPage] = newInfo;
-            BLOG("Added current page as a precondition page: %lu", static_cast<unsigned long>(currentPage));
-        }
-        // mark as covered for this episode to avoid immediate guidance
-        this->_coveredPreconditionsThisEpisode.insert(currentPage);
-        BLOG("Precondition pages count after add: %zu", this->_preconditionPages.size());
-    }
+//    void ModelReusableAgent::addCurrentPageAsPrecondition() {
+//        if (nullptr == this->_newState) {
+//            BLOG("addCurrentPageAsPrecondition: _newState is null");
+//            return;
+//        }
+//        uintptr_t currentPage = this->_newState->hash();
+//        std::lock_guard<std::mutex> guard(this->_preconditionLock);
+//        (void)guard;
+//        auto it = this->_preconditionPages.find(currentPage);
+//        if (it == this->_preconditionPages.end()) {
+//            PreconditionInfo newInfo;
+//            newInfo.score = 1.0;
+//            this->_preconditionPages[currentPage] = newInfo;
+//            BLOG("Added current page as a precondition page: %lu", static_cast<unsigned long>(currentPage));
+//        }
+//        // mark as covered for this episode to avoid immediate guidance
+//        this->_coveredPreconditionsThisEpisode.insert(currentPage);
+//        BLOG("Precondition pages count after add: %zu", this->_preconditionPages.size());
+//    }
 
     void ModelReusableAgent::addCurrentPageAsPrecondition(const StatePtr &state) {
         if (state == nullptr) {
