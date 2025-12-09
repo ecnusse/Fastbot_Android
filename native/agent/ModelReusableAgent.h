@@ -103,6 +103,9 @@ namespace fastbotx {
         // New helper: check if an action has been tried over the attempt limit during guidance for a page
         bool isActionOverAttemptLimit(uintptr_t pageHash, uint64_t actionHash) const;
 
+        // New helper: get total clicks for an action from reuse model (sum of per-target counts)
+        int getTotalClicksForAction(uint64_t actionHash) const;
+
     protected:
         double _alpha{};
         double _epsilon{};
@@ -119,7 +122,7 @@ namespace fastbotx {
         std::string _modelSavePath;
         std::string _defaultModelSavePath;
         static std::string DefaultModelSavePath; // if the saved path is not specified, use this as the default.
-        std::mutex _reuseModelLock;
+        mutable std::mutex _reuseModelLock;
 
         void computeAlphaValue();
 
@@ -150,6 +153,7 @@ namespace fastbotx {
         double _guidance_gamma;   // gamma for Rmulti bonus (tunable)
         int _guidance_action_attempt_limit; // per-action attempt limit during guidance (tunable)
         int _guidance_history_len; // how many historical actions to record (default 6)
+        double _attempt_fail_decay; // per-attempt decay factor for guidance probability in this episode (0<d<=1)
 
         // runtime: per-precondition per-action attempt counts during guidance phase
         std::unordered_map<uintptr_t, std::unordered_map<uint64_t, int>> _guidanceAttemptCounts;

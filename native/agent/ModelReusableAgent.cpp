@@ -24,6 +24,11 @@ namespace fastbotx {
             : AbstractAgent(model), _alpha(SarsaRLDefaultAlpha), _epsilon(SarsaRLDefaultEpsilon),
               _modelSavePath(DefaultModelSavePath), _defaultModelSavePath(DefaultModelSavePath) {
         this->_algorithmType = AlgorithmType::Reuse;
+        // guidance hyperparams defaults
+        this->_guidance_gamma = 0.1;
+        this->_guidance_action_attempt_limit = 10;
+        this->_guidance_history_len = 6;
+        this->_attempt_fail_decay = 0.8; // each failed attempt multiplies probability by this (per-episode)
     }
 
     ModelReusableAgent::~ModelReusableAgent() {
@@ -203,25 +208,56 @@ namespace fastbotx {
                     // only record history when we actually just arrived (avoid duplicate records when staying on page)
                     if (currentPage != lastPage) {
                         PreconditionInfo &info = it->second;
+                        BDLOG("[TRACE] updateStrategy: arrived at precondition page %lu (lastPage=%lu). Recording history...", static_cast<unsigned long>(currentPage), static_cast<unsigned long>(lastPage));
                         // collect up to _guidance_history_len historical actions: last N from _previousActions plus _newAction
                         std::vector<ActionPtr> history;
-                        int need = this->_guidance_history_len - 1; // reserve one slot for _newAction
-                        for (int i = (int)this->_previousActions.size() - 1; i >= 0 && need > 0; --i, --need) {
+                        // collect all previous actions (newest first)
+                        for (int i = (int)this->_previousActions.size() - 1; i >= 0; --i) {
                             history.push_back(this->_previousActions[i]);
                         }
-                        if (this->_newAction != nullptr) history.push_back(this->_newAction);
+                        if (this->_newAction != nullptr) {
+                            if (!this->_previousActions.empty()) {
+                                auto lastPrev = this->_previousActions.back();
+                                if (lastPrev != nullptr && lastPrev->hash() == this->_newAction->hash()) {
+                                    BDLOG("[TRACE] updateStrategy: newAction hash equals last previous action; skipping adding newAction to history");
+                                } else {
+                                    history.push_back(this->_newAction);
+                                }
+                            } else {
+                                history.push_back(this->_newAction);
+                            }
+                        }
+                        BDLOG("[TRACE] updateStrategy: collected history size=%zu (guidance_len=%d)", history.size(), this->_guidance_history_len);
                         // record each action's success count for this precondition page
                         for (auto &a : history) {
                             if (a == nullptr) continue;
-                            uint64_t ah = static_cast<uint64_t>(a->hash());
+                            // If this action is already an ActivityNameAction, use its hash (same type as reuse model)
+                            uint64_t ah = 0;
+                            auto ana = std::dynamic_pointer_cast<ActivityNameAction>(a);
+                            if (ana) {
+                                ah = static_cast<uint64_t>(ana->hash());
+                                BDLOG("[TRACE] updateStrategy: history action is ActivityNameAction id=%s hash=%llu", ana->getId().c_str(), static_cast<unsigned long long>(ah));
+                            } else {
+                                // fallback: use the action's own hash
+                                ah = static_cast<uint64_t>(a->hash());
+                                BDLOG("[TRACE] updateStrategy: history action fallback hash=%llu toString=%s", static_cast<unsigned long long>(ah), a->toString().c_str());
+                            }
                             info.actionList[ah] += 1;
                         }
                         // decay score (long-term importance)
+                        double oldScore = info.score;
                         info.score = std::max(info.score * this->_hit_decay, this->_min_score);
+                        BDLOG("[TRACE] updateStrategy: precondition page %lu score: %f -> %f (hit_decay=%f, min_score=%f)", static_cast<unsigned long>(currentPage), oldScore, info.score, this->_hit_decay, this->_min_score);
                         BLOG("Recorded %zu history actions for precondition page %lu", history.size(), static_cast<unsigned long>(currentPage));
+                    }
+                    else {
+                        BDLOG("[TRACE] updateStrategy: currentPage == lastPage (%lu). Skipping history recording to avoid duplicate.", static_cast<unsigned long>(currentPage));
                     }
                     // mark covered this episode so we don't repeatedly guide it
                     this->_coveredPreconditionsThisEpisode.insert(currentPage);
+                    // clear per-page attempt counts for this precondition page since it's now covered
+                    this->_guidanceAttemptCounts.erase(currentPage);
+                    BDLOG("[TRACE] updateStrategy: marked precondition page %lu as covered in this episode (covered count=%zu)", static_cast<unsigned long>(currentPage), this->_coveredPreconditionsThisEpisode.size());
                 }
             }
         } else {
@@ -250,10 +286,13 @@ namespace fastbotx {
         // New behavior: consider any action on current page that appears in any precondition's actionList.
         // Map actionHash -> ActionPtr for actions present on current page
         std::unordered_map<uint64_t, ActionPtr> pageActions;
-        for (auto &action : this->_newState->getActions()) {
+        auto pageActionsVec = this->_newState->getActions();
+        for (auto &action : pageActionsVec) {
             uint64_t ah = static_cast<uint64_t>(action->hash());
             pageActions[ah] = action;
         }
+        BLOG("[GUIDE] selectGuidedActionForPrecondition: currentPage=%lu, pageActions=%zu, preconditionPages=%zu, coveredThisEpisode=%zu",
+             static_cast<unsigned long>(this->_newState->hash()), pageActions.size(), this->_preconditionPages.size(), this->_coveredPreconditionsThisEpisode.size());
 
         // For each action on the page, find which precondition pages it can reach (from _preconditionPages)
         // and compute the best probability for that action (best over target preconditions).
@@ -268,17 +307,33 @@ namespace fastbotx {
             const PreconditionInfo &info = entry.second;
             if (info.actionList.empty()) continue; // no data for this precondition
             // Skip prePage if already covered this episode
-            if (this->_coveredPreconditionsThisEpisode.find(prePage) != this->_coveredPreconditionsThisEpisode.end()) continue;
+            if (this->_coveredPreconditionsThisEpisode.find(prePage) != this->_coveredPreconditionsThisEpisode.end()) {
+                BDLOG("[GUIDE] skip prePage %lu (already covered this episode)", static_cast<unsigned long>(prePage));
+                continue;
+            }
+            BDLOG("[GUIDE] evaluating prePage %lu: actionList size=%zu, score=%f", static_cast<unsigned long>(prePage), info.actionList.size(), info.score);
             for (const auto &ac : info.actionList) {
                 uint64_t ah = ac.first;
+                int succCount = ac.second;
                 auto pit = pageActions.find(ah);
-                if (pit == pageActions.end()) continue; // this action not available in current page
+                if (pit == pageActions.end()) {
+                    BDLOG("[GUIDE]   action hash %llu not present on current page", static_cast<unsigned long long>(ah));
+                    continue; // this action not available in current page
+                }
                 ActionPtr actionPtr = pit->second;
                 // check attempt limit for this page-action
-                if (isActionOverAttemptLimit(prePage, ah)) continue;
+                if (isActionOverAttemptLimit(prePage, ah)) {
+                    BDLOG("[GUIDE]   action %llu -> prePage %lu skipped due to attempt limit", static_cast<unsigned long long>(ah), static_cast<unsigned long>(prePage));
+                    continue;
+                }
                 // compute probability to reach this precondition via this action
                 double p = computePreconditionActionProbability(prePage, actionPtr);
-                if (p <= 0.0) continue;
+                BDLOG("[GUIDE]   candidate action %llu -> page %lu: succ=%d, actionVisited=%d, scorePre=%f, p=%f",
+                      static_cast<unsigned long long>(ah), static_cast<unsigned long>(prePage), succCount, actionPtr->getVisitedCount(), info.score, p);
+                if (p <= 0.0) {
+                    BDLOG("[GUIDE]     computed p<=0, skip");
+                    continue;
+                }
                 // record candidate: action may reach this prePage with prob p
                 candidatesList.push_back(Candidate{ah, actionPtr, prePage, p});
                 if (p > bestOverallP + EPS) bestOverallP = p;
@@ -287,6 +342,7 @@ namespace fastbotx {
 
         if (candidatesList.empty() || bestOverallP < 0.0) {
             // no usable guidance candidates found on this page -> fallback
+            BDLOG("[GUIDE] no guidance candidates found (candidatesList=%zu, bestOverallP=%f)", candidatesList.size(), bestOverallP);
             return nullptr;
         }
 
@@ -298,6 +354,15 @@ namespace fastbotx {
             if (itb == bestPerAction.end() || c.p > itb->second.p + EPS) {
                 bestPerAction[c.actionHash] = c;
             }
+        }
+
+        BDLOG("[GUIDE] candidatesList=%zu, bestPerAction=%zu, bestOverallP=%f", candidatesList.size(), bestPerAction.size(), bestOverallP);
+        for (const auto &kv : bestPerAction) {
+            const Candidate &c = kv.second;
+            // try to print action details
+            std::string actDesc = (c.action ? c.action->toString() : std::string("<null>"));
+            BDLOG("[GUIDE] bestPerAction: actionHash=%llu, targetPage=%lu, p=%f, actDesc=%s",
+                  static_cast<unsigned long long>(c.actionHash), static_cast<unsigned long>(c.targetPage), c.p, actDesc.c_str());
         }
 
         // Now find actions whose bestPerAction.p equals bestOverallP (within EPS)
@@ -316,8 +381,11 @@ namespace fastbotx {
         Candidate chosen = bestActions[pickIdx];
 
         // increment attempt count for the chosen page-action pair
-        this->_guidanceAttemptCounts[chosen.targetPage][chosen.actionHash] += 1;
-        BLOG("Guidance chosen action %llu for target precondition page %lu with p=%f attempts=%d", static_cast<unsigned long long>(chosen.actionHash), static_cast<unsigned long>(chosen.targetPage), chosen.p, this->_guidanceAttemptCounts[chosen.targetPage][chosen.actionHash]);
+        int newAttempts = ++this->_guidanceAttemptCounts[chosen.targetPage][chosen.actionHash];
+        // extra logs for chosen
+        std::string chosenDesc = (chosen.action ? chosen.action->toString() : std::string("<null>"));
+        BLOG("[GUIDE] Guidance chosen actionHash=%llu for target precondition page=%lu with p=%f attempts=%d; actionDesc=%s",
+             static_cast<unsigned long long>(chosen.actionHash), static_cast<unsigned long>(chosen.targetPage), chosen.p, newAttempts, chosenDesc.c_str());
         return chosen.action;
     }
 
@@ -332,7 +400,9 @@ namespace fastbotx {
         auto iter = info.actionList.find(ah);
         if (iter == info.actionList.end()) return 0.0; // no recorded successes
         int countToPre = iter->second;
-        int totalClicks = std::max(1, action->getVisitedCount()); // avoid divide by zero
+        // Use aggregated total clicks from reuse model, not action->getVisitedCount()
+        int totalClicks = this->getTotalClicksForAction(ah);
+        if (totalClicks <= 0) totalClicks = std::max(1, action->getVisitedCount()); // fallback
         double scorePre = info.score;
         // compute k (number of preconditions this action can reach)
         int k = 0;
@@ -340,8 +410,23 @@ namespace fastbotx {
             if (p.second.actionList.find(ah) != p.second.actionList.end()) ++k;
         }
         double Rmulti = 1.0 + _guidance_gamma * sqrt((double)k);
-        double p = (static_cast<double>(countToPre) / static_cast<double>(totalClicks)) * scorePre * Rmulti;
-        return p;
+        double baseP = (static_cast<double>(countToPre) / static_cast<double>(totalClicks)) * scorePre * Rmulti;
+        // Apply per-episode attempt-failure decay: the more we've tried this page-action in this episode and failed, the more we decay its probability
+        double decayedP = baseP;
+        auto pit = this->_guidanceAttemptCounts.find(pageHash);
+        if (pit != this->_guidanceAttemptCounts.end()) {
+            auto ait = pit->second.find(ah);
+            if (ait != pit->second.end() && ait->second > 0) {
+                int attempts = ait->second;
+                // decay factor: attempt_fail_decay ^ attempts
+                double decayFactor = pow(this->_attempt_fail_decay, attempts);
+                decayedP = baseP * decayFactor;
+                BDLOG("[GUIDE] apply attempt-fail decay: attempts=%d decayFactor=%f baseP=%f decayedP=%f", attempts, decayFactor, baseP, decayedP);
+            }
+        }
+        BDLOG("[GUIDE] computePreconditionActionProbability: actionHash=%llu page=%lu countToPre=%d totalClicks=%d scorePre=%f k=%d Rmulti=%f baseP=%f decayedP=%f",
+              static_cast<unsigned long long>(ah), static_cast<unsigned long>(pageHash), countToPre, totalClicks, scorePre, k, Rmulti, baseP, decayedP);
+        return decayedP;
     }
 
 
@@ -531,6 +616,7 @@ namespace fastbotx {
 
         {
             std::lock_guard<std::mutex> reuseGuard(this->_reuseModelLock);
+            (void)reuseGuard;
             this->_reuseModel.clear();
             this->_reuseQValue.clear();
         }
@@ -541,20 +627,21 @@ namespace fastbotx {
             return;
         }
         for (int entryIndex = 0; entryIndex < reusedModelDataPtr->size(); entryIndex++) {
-            auto reuseEntryInReuseModel = reusedModelDataPtr->Get(entryIndex);
-            uint64_t actionHash = reuseEntryInReuseModel->action();
-            auto activityEntry = reuseEntryInReuseModel->targets();
-            ReuseEntryM entryPtr;
-            for (int targetIndex = 0; targetIndex < activityEntry->size(); targetIndex++) {
-                auto targetEntry = activityEntry->Get(targetIndex);
-                BDLOG("load model hash: %llu %s %d", static_cast<unsigned long long>(actionHash), targetEntry->activity()->str().c_str(), static_cast<int>(targetEntry->times()));
-                entryPtr.insert(std::make_pair(std::make_shared<std::string>(targetEntry->activity()->str()), static_cast<int>(targetEntry->times())));
-            }
-            if (!entryPtr.empty()) {
+             auto reuseEntryInReuseModel = reusedModelDataPtr->Get(entryIndex);
+             uint64_t actionHash = reuseEntryInReuseModel->action();
+             auto activityEntry = reuseEntryInReuseModel->targets();
+             ReuseEntryM entryPtr;
+             for (int targetIndex = 0; targetIndex < activityEntry->size(); targetIndex++) {
+                 auto targetEntry = activityEntry->Get(targetIndex);
+                 BDLOG("load model hash: %llu %s %d", static_cast<unsigned long long>(actionHash), targetEntry->activity()->str().c_str(), static_cast<int>(targetEntry->times()));
+                 entryPtr.insert(std::make_pair(std::make_shared<std::string>(targetEntry->activity()->str()), static_cast<int>(targetEntry->times())));
+             }
+             if (!entryPtr.empty()) {
                 std::lock_guard<std::mutex> reuseGuard(this->_reuseModelLock);
+                (void)reuseGuard;
                 this->_reuseModel.insert(std::make_pair(actionHash, entryPtr));
-            }
-        }
+             }
+         }
         BLOG("loaded model contains actions: %zu", this->_reuseModel.size());
 
         // read precondition pages (score and action_counts persisted in flatbuffer schema)
@@ -693,8 +780,47 @@ namespace fastbotx {
         } else {
             BLOG("addCurrentPageAsPrecondition(state): page already present %lu", static_cast<unsigned long>(currentPage));
         }
-        this->_coveredPreconditionsThisEpisode.insert(currentPage);
-    }
+        // --- Record recent history actions into the precondition's actionList (no state checks) ---
+        {
+            PreconditionInfo &info = this->_preconditionPages[currentPage];
+            std::vector<ActionPtr> history;
+            // collect all previous actions (newest first)
+            for (int i = (int)this->_previousActions.size() - 1; i >= 0; --i) {
+                history.push_back(this->_previousActions[i]);
+            }
+            if (this->_newAction != nullptr) {
+                // If newAction is the same as the last previous action, skip adding it to history
+                if (!this->_previousActions.empty()) {
+                    auto lastPrev = this->_previousActions.back();
+                    if (lastPrev != nullptr && lastPrev->hash() == this->_newAction->hash()) {
+                        BDLOG("[TRACE] addCurrentPageAsPrecondition: newAction hash equals last previous action; skipping adding newAction to history");
+                    } else {
+                        history.push_back(this->_newAction);
+                    }
+                } else {
+                    history.push_back(this->_newAction);
+                }
+            }
+            BDLOG("[TRACE] addCurrentPageAsPrecondition: adding %zu history actions for page %lu", history.size(), static_cast<unsigned long>(currentPage));
+            for (auto &a : history) {
+                if (a == nullptr) continue;
+                uint64_t ah = 0;
+                auto ana = std::dynamic_pointer_cast<ActivityNameAction>(a);
+                if (ana) {
+                    ah = static_cast<uint64_t>(ana->hash());
+                    BDLOG("[TRACE] addCurrentPageAsPrecondition: history action is ActivityNameAction id=%s hash=%llu", ana->getId().c_str(), static_cast<unsigned long long>(ah));
+                } else {
+                    ah = static_cast<uint64_t>(a->hash());
+                    BDLOG("[TRACE] addCurrentPageAsPrecondition: history action fallback hash=%llu toString=%s", static_cast<unsigned long long>(ah), a->toString().c_str());
+                }
+                info.actionList[ah] += 1;
+            }
+            BDLOG("[TRACE] addCurrentPageAsPrecondition: page %lu now has %zu recorded actions", static_cast<unsigned long>(currentPage), info.actionList.size());
+        }
+         this->_coveredPreconditionsThisEpisode.insert(currentPage);
+        // clear per-page attempt counts for this precondition page when added/covered
+        this->_guidanceAttemptCounts.erase(currentPage);
+     }
 
     void ModelReusableAgent::beginNewEpisode() {
         std::lock_guard<std::mutex> guard(this->_preconditionLock);
@@ -712,6 +838,19 @@ namespace fastbotx {
         if (ait == pit->second.end()) return false;
         return ait->second >= this->_guidance_action_attempt_limit;
     }
+
+    // Sum up the total clicks (sum of counts to targets) for an action from the reuse model
+    int ModelReusableAgent::getTotalClicksForAction(uint64_t actionHash) const {
+        std::lock_guard<std::mutex> guard(this->_reuseModelLock);
+        (void)guard;
+         auto it = this->_reuseModel.find(actionHash);
+         if (it == this->_reuseModel.end()) return 0;
+         int total = 0;
+         for (const auto &entry : it->second) {
+             total += entry.second;
+         }
+         return total;
+     }
 
     void ModelReusableAgent::updateReuseModel() {
         if (this->_previousActions.empty())
@@ -745,3 +884,4 @@ namespace fastbotx {
 } // namespace fastbotx
 
 #endif /* fastbotx_ModelReusableAgent_CPP_ */
+
