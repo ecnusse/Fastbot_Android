@@ -11,8 +11,15 @@
 #include "Base.h"
 #include "Action.h"
 #include <map>
+#include <functional>
+#include <vector>
+#include <mutex>
 
 namespace fastbotx {
+
+    // Callback invoked when a new Action is created/added to the Graph
+    // Accepts a generic ActionPtr (ActivityStateActionPtr can be passed as it derives from Action)
+    typedef std::function<void(const ActionPtr&)> ActionCreatedCallback;
 
     typedef std::map<WidgetPtr, ActivityStateActionPtrSet, Comparator<Widget>> ModelActionPtrWidgetMap;
     typedef std::map<std::string, StatePtrSet> StatePtrStrMap;
@@ -49,6 +56,9 @@ namespace fastbotx {
 
     class Graph : Node {
     public:
+        // Register a callback to be invoked whenever the graph creates a new Action
+        void registerActionCreatedCallback(ActionCreatedCallback cb);
+
         Graph();
 
         inline size_t stateSize() const { return this->_states.size(); }
@@ -73,6 +83,10 @@ namespace fastbotx {
     private:
         void addActionFromState(const StatePtr &node);
 
+        // Action-created callback storage
+        std::vector<ActionCreatedCallback> _actionCreatedCallbacks;
+        std::mutex _actionCallbackMutex;
+
 
         StatePtrSet _states;      // all of the states in the graph
         stringPtrSet _visitedActivities; // a string set containing all the visited activities
@@ -88,6 +102,11 @@ namespace fastbotx {
         time_t _timeStamp;
 
         const static std::pair<int, double> _defaultDistri;
+
+    public:
+        // Return a set containing both visited and unvisited actions (copy)
+        ActivityStateActionPtrSet getAllActions() const;
+
     };
 
     typedef std::shared_ptr<Graph> GraphPtr;

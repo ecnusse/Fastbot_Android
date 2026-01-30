@@ -12,6 +12,7 @@
 #include "Action.h"
 #include <vector>
 #include <map>
+#include <memory>
 
 namespace fastbotx {
 
@@ -23,7 +24,7 @@ namespace fastbotx {
     typedef std::map<uint64_t, ReuseEntryM> ReuseEntryIntMap;
     typedef std::map<uint64_t, double> ReuseEntryQValueMap;
 
-    class ModelReusableAgent : public AbstractAgent {
+    class ModelReusableAgent : public AbstractAgent, public std::enable_shared_from_this<ModelReusableAgent> {
 
     public:
         explicit ModelReusableAgent(const ModelPtr &model);

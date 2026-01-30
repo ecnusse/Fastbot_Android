@@ -31,6 +31,7 @@ namespace fastbotx {
         BLOG("save model in destruct");
         this->saveReuseModel(this->_modelSavePath);
         this->_reuseModel.clear();
+        this->_reuseQValue.clear();
     }
 
     void ModelReusableAgent::computeAlphaValue() {
@@ -492,11 +493,48 @@ namespace fastbotx {
             }
             if (!entryPtr.empty()) {
                 std::lock_guard<std::mutex> reuseGuard(this->_reuseModelLock);
-//            this->_reuseQValue.insert(std::make_pair(actionHash, reuseEntryInReuseModel->quality()));
+                this->_reuseQValue.insert(std::make_pair(actionHash, reuseEntryInReuseModel->quality()));
                 this->_reuseModel.insert(std::make_pair(actionHash, entryPtr));
             }
         }
+        // Apply loaded Q-values back to action objects in the graph so runtime uses persisted values
+        {
+            const GraphPtr &graphRef = this->_model.lock()->getGraph();
+            if (graphRef) {
+                std::lock_guard<std::mutex> reuseGuard(this->_reuseModelLock);
+                auto allActions = graphRef->getAllActions();
+                for (const auto &actionPtr : allActions) {
+                    uint64_t h = (uint64_t) actionPtr->hash();
+                    auto qIt = this->_reuseQValue.find(h);
+                    if (qIt != this->_reuseQValue.end()) {
+                        actionPtr->setQValue(qIt->second);
+                    }
+                }
+            }
+        }
         BLOG("loaded model contains actions: %zu", this->_reuseModel.size());
+        // Register a hook so that actions created later during testing can receive persisted Q-values
+        // when they are created in the Graph.
+        {
+            auto modelPtr = this->_model.lock();
+            if (modelPtr) {
+                const GraphPtr &graphRef = modelPtr->getGraph();
+                if (graphRef) {
+                    // Use shared_from_this to create a weak_ptr and capture it in the lambda to avoid dangling this
+                    std::weak_ptr<ModelReusableAgent> weakSelf = this->shared_from_this();
+                    graphRef->registerActionCreatedCallback([weakSelf](const ActionPtr &actionPtr) {
+                        auto self = weakSelf.lock();
+                        if (!actionPtr || !self) return;
+                        uint64_t h = (uint64_t) actionPtr->hash();
+                        std::lock_guard<std::mutex> reuseGuard(self->_reuseModelLock);
+                        auto qIt = self->_reuseQValue.find(h);
+                        if (qIt != self->_reuseQValue.end()) {
+                            actionPtr->setQValue(qIt->second);
+                        }
+                    });
+                 }
+             }
+         }
         delete[] modelFileData;
     }
 
@@ -520,10 +558,17 @@ namespace fastbotx {
                             *(activityCountEntry.first)), activityCountEntry.second);
                     activityCountEntryVector.push_back(sentryActT);
                 }
+                // read quality value for this action from _reuseQValue (default 0.0)
+                float quality = 0.0f;
+                auto qIt = this->_reuseQValue.find(actionHash);
+                if (qIt != this->_reuseQValue.end()) {
+                    quality = static_cast<float>(qIt->second);
+                }
                 auto savedActivityCountEntries = CreateReuseEntry(builder, actionHash,
                                                                   builder.CreateVector(
                                                                           activityCountEntryVector.data(),
-                                                                          activityCountEntryVector.size()));
+                                                                          activityCountEntryVector.size()),
+                                                                  quality);
                 actionActivityVector.push_back(savedActivityCountEntries);
             }
         }
@@ -536,7 +581,7 @@ namespace fastbotx {
         if (outputFilePath.empty()) // if the passed argument modelFilepath is "", use the tmpSavePath
             outputFilePath = this->_defaultModelSavePath;
         BLOG("save model to path: %s", outputFilePath.c_str());
-        std::ofstream outputFile(outputFilePath);
+        std::ofstream outputFile(outputFilePath, std::ios::binary);
         outputFile.write((char *) builder.GetBufferPointer(), static_cast<int>(builder.GetSize()));
         outputFile.close();
     }

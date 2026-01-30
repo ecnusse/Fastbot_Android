@@ -69,6 +69,11 @@ namespace fastbotx {
         this->_listeners.emplace_back(listener);
     }
 
+    void Graph::registerActionCreatedCallback(ActionCreatedCallback cb) {
+        std::lock_guard<std::mutex> l(this->_actionCallbackMutex);
+        if (cb) this->_actionCreatedCallbacks.emplace_back(std::move(cb));
+    }
+
     void Graph::addActionFromState(const StatePtr &node) {
         auto nodeActions = node->getActions();
         for (const auto &action: nodeActions) {
@@ -81,6 +86,15 @@ namespace fastbotx {
             } else {
                 action->setId((int) this->_actionCounter.getTotal());
                 this->_actionCounter.countAction(action);
+                // Notify registered callbacks that a new action has been created/added
+                std::vector<ActionCreatedCallback> callbacks;
+                {
+                    std::lock_guard<std::mutex> l(this->_actionCallbackMutex);
+                    callbacks = this->_actionCreatedCallbacks;
+                }
+                for (auto &cb : callbacks) {
+                    if (cb) cb(action);
+                }
             }
 
             if (!visitedadd && action->isVisited())
@@ -91,6 +105,14 @@ namespace fastbotx {
         }
         BDLOG("unvisited action: %zu, visited action %zu", this->_unvisitedActions.size(),
               this->_visitedActions.size());
+    }
+
+    ActivityStateActionPtrSet Graph::getAllActions() const {
+        ActivityStateActionPtrSet all;
+        // union of visited and unvisited actions
+        for (const auto &a: this->_visitedActions) all.emplace(a);
+        for (const auto &a: this->_unvisitedActions) all.emplace(a);
+        return all;
     }
 
     Graph::~Graph() {
