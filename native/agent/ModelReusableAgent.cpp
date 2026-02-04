@@ -380,47 +380,104 @@ namespace fastbotx {
                     // only record history when we actually just arrived (avoid duplicate records when staying on page)
                     if (currentPage != lastPage) {
                         PreconditionInfo &info = it->second;
-                        BDLOG("[TRACE] updateStrategy: arrived at precondition page %lu (lastPage=%lu). Recording history...", static_cast<unsigned long>(currentPage), static_cast<unsigned long>(lastPage));
-                        // collect up to _guidance_history_len historical actions: last N from _previousActions plus _newAction
+                        BLOG("[GUIDE] updateStrategy: arrived at precondition page %lu (lastPage=%lu). Recording history...", static_cast<unsigned long>(currentPage), static_cast<unsigned long>(lastPage));
+                        // collect historical actions from _previousActions only
+                        // NOTE: Do NOT include _newAction - it will be added to _previousActions at the END of this function
                         std::vector<ActionPtr> history;
-                        // collect all previous actions (newest first)
-                        for (int i = (int)this->_previousActions.size() - 1; i >= 0; --i) {
+                        // collect all previous actions (these are already executed actions, oldest first for template)
+                        for (int i = 0; i < (int)this->_previousActions.size(); ++i) {
                             history.push_back(this->_previousActions[i]);
                         }
-                        if (this->_newAction != nullptr) {
-                            if (!this->_previousActions.empty()) {
-                                auto lastPrev = this->_previousActions.back();
-                                if (lastPrev != nullptr && lastPrev->hash() == this->_newAction->hash()) {
-                                    BDLOG("[TRACE] updateStrategy: newAction hash equals last previous action; skipping adding newAction to history");
-                                } else {
-                                    history.push_back(this->_newAction);
-                                }
-                            } else {
-                                history.push_back(this->_newAction);
-                            }
-                        }
-                        BDLOG("[TRACE] updateStrategy: collected history size=%zu (guidance_len=%d)", history.size(), this->_guidance_history_len);
+                        BLOG("[GUIDE] updateStrategy: collected %zu history actions", history.size());
+
                         // record each action's success count for this precondition page
                         for (auto &a : history) {
                             if (a == nullptr) continue;
-                            // If this action is already an ActivityNameAction, use its hash (same type as reuse model)
                             uint64_t ah = 0;
                             auto ana = std::dynamic_pointer_cast<ActivityNameAction>(a);
                             if (ana) {
                                 ah = static_cast<uint64_t>(ana->hash());
-                                BDLOG("[TRACE] updateStrategy: history action is ActivityNameAction id=%s hash=%llu", ana->getId().c_str(), static_cast<unsigned long long>(ah));
                             } else {
-                                // fallback: use the action's own hash
                                 ah = static_cast<uint64_t>(a->hash());
-                                BDLOG("[TRACE] updateStrategy: history action fallback hash=%llu toString=%s", static_cast<unsigned long long>(ah), a->toString().c_str());
                             }
                             info.actionList[ah] += 1;
                         }
+
+                        // --- Generate template from history ---
+                        // Build sequence from history (up to 6 actions, oldest to newest)
+                        std::vector<uint64_t> sequence;
+                        for (auto &a : history) {
+                            if (a == nullptr) continue;
+                            uint64_t ah = 0;
+                            auto ana = std::dynamic_pointer_cast<ActivityNameAction>(a);
+                            if (ana) {
+                                ah = static_cast<uint64_t>(ana->hash());
+                            } else {
+                                ah = static_cast<uint64_t>(a->hash());
+                            }
+                            sequence.push_back(ah);
+                            if (sequence.size() >= 6) break; // max 6 actions in template
+                        }
+
+                        BLOG("[GUIDE] updateStrategy: built sequence with %zu actions for template", sequence.size());
+
+                        // Check if this sequence matches any existing template
+                        bool matched = false;
+                        for (int t = 0; t < info.templateCount; ++t) {
+                            bool eq = true;
+                            for (size_t i = 0; i < sequence.size() && i < 6; ++i) {
+                                if (info.templates[t].sequence[i] != sequence[i]) { eq = false; break; }
+                            }
+                            if (eq) { matched = true; break; }
+                        }
+
+                        // If not matched, create new template (FIFO)
+                        if (!matched && !sequence.empty()) {
+                            GuidancePathTemplate newT;
+                            // Initialize
+                            for (int i = 0; i < 6; ++i) {
+                                newT.sequence[i] = 0;
+                                newT.reliability[i] = 1.0; // start with high reliability
+                            }
+                            // Copy sequence
+                            for (size_t i = 0; i < sequence.size() && i < 6; ++i) {
+                                newT.sequence[i] = sequence[i];
+                            }
+
+                            // FIFO insert at head
+                            if (info.templateCount < 5) {
+                                // Shift existing templates
+                                for (int t = info.templateCount; t > 0; --t) {
+                                    info.templates[t] = info.templates[t-1];
+                                }
+                                info.templates[0] = newT;
+                                info.templateCount++;
+                                BLOG("[GUIDE] updateStrategy: created new template at index 0, templateCount=%d", info.templateCount);
+                            } else {
+                                // Full, replace oldest (shift and insert at head)
+                                for (int t = 4; t > 0; --t) {
+                                    info.templates[t] = info.templates[t-1];
+                                }
+                                info.templates[0] = newT;
+                                BLOG("[GUIDE] updateStrategy: replaced oldest template (FIFO), templateCount=%d", info.templateCount);
+                            }
+
+                            // Log the new template
+                            BLOG("[GUIDE] updateStrategy: new template sequence=[%llu,%llu,%llu,%llu,%llu,%llu]",
+                                 static_cast<unsigned long long>(newT.sequence[0]),
+                                 static_cast<unsigned long long>(newT.sequence[1]),
+                                 static_cast<unsigned long long>(newT.sequence[2]),
+                                 static_cast<unsigned long long>(newT.sequence[3]),
+                                 static_cast<unsigned long long>(newT.sequence[4]),
+                                 static_cast<unsigned long long>(newT.sequence[5]));
+                        } else if (matched) {
+                            BLOG("[GUIDE] updateStrategy: sequence matches existing template, skipping creation");
+                        }
+
                         // decay score (long-term importance)
                         double oldScore = info.score;
                         info.score = std::max(info.score * this->_hit_decay, this->_min_score);
-                        BDLOG("[TRACE] updateStrategy: precondition page %lu score: %f -> %f (hit_decay=%f, min_score=%f)", static_cast<unsigned long>(currentPage), oldScore, info.score, this->_hit_decay, this->_min_score);
-                        BLOG("Recorded %zu history actions for precondition page %lu", history.size(), static_cast<unsigned long>(currentPage));
+                        BLOG("[GUIDE] updateStrategy: precondition page %lu score: %f -> %f", static_cast<unsigned long>(currentPage), oldScore, info.score);
                     }
                     else {
                         BDLOG("[TRACE] updateStrategy: currentPage == lastPage (%lu). Skipping history recording to avoid duplicate.", static_cast<unsigned long>(currentPage));
@@ -447,22 +504,44 @@ namespace fastbotx {
     ActionPtr ModelReusableAgent::selectGuidedActionForPrecondition() {
         if (nullptr == this->_newState) return nullptr;
 
+        BLOG("[GUIDE] selectGuidedActionForPrecondition: enter, currentState activity=%s",
+             this->_newState->getActivityString() ? this->_newState->getActivityString()->c_str() : "null");
+
         // 1. Build candidates: pages not covered this episode, score>=0.3, have templates
         std::vector<std::pair<uintptr_t, PreconditionInfo*>> candidates;
         {
             std::lock_guard<std::mutex> guard(this->_preconditionLock);
+            BLOG("[GUIDE] selectGuidedActionForPrecondition: total preconditionPages=%zu, coveredThisEpisode=%zu",
+                 this->_preconditionPages.size(), this->_coveredPreconditionsThisEpisode.size());
             for (auto &kv : this->_preconditionPages) {
                 auto &pageHash = kv.first;
                 auto &info = kv.second;
-                if (this->_coveredPreconditionsThisEpisode.find(pageHash) != this->_coveredPreconditionsThisEpisode.end()) continue;
-                if (info.score < 0.3) continue;
-                if (info.templateCount == 0) continue;
+                if (this->_coveredPreconditionsThisEpisode.find(pageHash) != this->_coveredPreconditionsThisEpisode.end()) {
+                    BDLOG("[GUIDE] skip page %lu: already covered", static_cast<unsigned long>(pageHash));
+                    continue;
+                }
+                if (info.score < 0.3) {
+                    BDLOG("[GUIDE] skip page %lu: score %.2f < 0.3", static_cast<unsigned long>(pageHash), info.score);
+                    continue;
+                }
+                if (info.templateCount == 0) {
+                    BDLOG("[GUIDE] skip page %lu: templateCount=0", static_cast<unsigned long>(pageHash));
+                    continue;
+                }
                 candidates.emplace_back(pageHash, &info);
+                BLOG("[GUIDE] candidate page %lu: score=%.2f, templateCount=%d",
+                     static_cast<unsigned long>(pageHash), info.score, info.templateCount);
             }
         }
-        if (candidates.empty()) return nullptr;
+
+        if (candidates.empty()) {
+            BLOG("[GUIDE] selectGuidedActionForPrecondition: no candidates, returning null");
+            return nullptr;
+        }
+        BLOG("[GUIDE] selectGuidedActionForPrecondition: %zu candidate pages", candidates.size());
 
         // 2. Global decay on candidate templates' reliabilities (spec allows decaying at selection time)
+        // Note: candidates hold pointers into _preconditionPages, so no lock needed here as we already built them
         for (auto &c : candidates) {
             PreconditionInfo *info = c.second;
             for (int t = 0; t < info->templateCount; ++t) {
@@ -473,6 +552,7 @@ namespace fastbotx {
         // 3. Prepare map of actions on current page
         std::unordered_map<uint64_t, ActionPtr> pageActions;
         for (auto &a : this->_newState->getActions()) pageActions[static_cast<uint64_t>(a->hash())] = a;
+        BLOG("[GUIDE] selectGuidedActionForPrecondition: current page has %zu actions", pageActions.size());
 
         // 4. Evaluate templates: reversed positions
         ActionPtr bestAction = nullptr;
@@ -753,8 +833,10 @@ namespace fastbotx {
             std::lock_guard<std::mutex> guard(this->_preconditionLock);
             (void)guard;
             this->_preconditionPages.clear();
+            BLOG("[GUIDE] Loading precondition pages from flatbuffer...");
             if (reuseFBModel->precondition_pages() != nullptr) {
                 auto preconditionPages = reuseFBModel->precondition_pages();
+                BLOG("[GUIDE] Found %d precondition pages in flatbuffer", preconditionPages->size());
                 for (int i = 0; i < preconditionPages->size(); ++i) {
                     auto page = preconditionPages->Get(i);
                     uintptr_t pageName = (uintptr_t) page->hashcode();
@@ -763,6 +845,14 @@ namespace fastbotx {
                     PreconditionInfo info;
                     // use persisted score if > 0, otherwise default to 1.0
                     info.score = (persistedScore > 0.0) ? persistedScore : 1.0;
+                    info.templateCount = 0; // initialize, will be set by loadTemplatesFromFBPage
+                    // initialize template slots
+                    for (int t = 0; t < 5; ++t) {
+                        for (int j = 0; j < 6; ++j) {
+                            info.templates[t].sequence[j] = 0;
+                            info.templates[t].reliability[j] = 0.0;
+                        }
+                    }
                     // load action_counts if present
                     if (page->action_counts() != nullptr) {
                         auto actionCountsVec = page->action_counts();
@@ -772,21 +862,40 @@ namespace fastbotx {
                             int times = ac->times();
                             info.actionList[ah] = times;
                         }
+                        BLOG("[GUIDE] Loaded page %lu: score=%f, actionList.size=%zu",
+                             static_cast<unsigned long>(pageName), info.score, info.actionList.size());
                     }
                     // load templates from flatbuffer page when schema provides them (compatible)
                     loadTemplatesFromFBPage(page, info);
+                    BLOG("[GUIDE] Loaded page %lu: templateCount=%d", static_cast<unsigned long>(pageName), info.templateCount);
+                    // Log each template's sequence
+                    for (int t = 0; t < info.templateCount; ++t) {
+                        BLOG("[GUIDE] Page %lu template[%d]: seq=[%llu,%llu,%llu,%llu,%llu,%llu] rel=[%.2f,%.2f,%.2f,%.2f,%.2f,%.2f]",
+                             static_cast<unsigned long>(pageName), t,
+                             static_cast<unsigned long long>(info.templates[t].sequence[0]),
+                             static_cast<unsigned long long>(info.templates[t].sequence[1]),
+                             static_cast<unsigned long long>(info.templates[t].sequence[2]),
+                             static_cast<unsigned long long>(info.templates[t].sequence[3]),
+                             static_cast<unsigned long long>(info.templates[t].sequence[4]),
+                             static_cast<unsigned long long>(info.templates[t].sequence[5]),
+                             info.templates[t].reliability[0], info.templates[t].reliability[1],
+                             info.templates[t].reliability[2], info.templates[t].reliability[3],
+                             info.templates[t].reliability[4], info.templates[t].reliability[5]);
+                    }
                     this->_preconditionPages[pageName] = info;
-                    BLOG("Loaded precondition page: %lu, score: %f", static_cast<unsigned long>(pageName), info.score);
                 }
+                BLOG("[GUIDE] Loaded %zu precondition pages from flatbuffer", this->_preconditionPages.size());
             } else {
-                BLOG("No precondition pages found in the model.");
+                BLOG("[GUIDE] No precondition pages found in flatbuffer model.");
             }
         }
         // --- Load companion precondition templates file if exists ---
         {
             std::string precondFilePath = modelFilePath + ".precond";
+            BLOG("[GUIDE] Trying to load companion file: %s", precondFilePath.c_str());
             std::unordered_map<uintptr_t, PreconditionInfo> filePages;
             if (loadPreconditionTemplatesFromFile(precondFilePath, filePages)) {
+                BLOG("[GUIDE] Loaded %zu pages from companion file", filePages.size());
                 std::lock_guard<std::mutex> guard(this->_preconditionLock);
                 for (const auto &kv : filePages) {
                     auto it = this->_preconditionPages.find(kv.first);
@@ -795,13 +904,18 @@ namespace fastbotx {
                         it->second.templateCount = kv.second.templateCount;
                         it->second.score = kv.second.score;
                         for (int t = 0; t < 5; ++t) it->second.templates[t] = kv.second.templates[t];
-                        BLOG("Merged precondition templates for page %lu from %s", static_cast<unsigned long>(kv.first), precondFilePath.c_str());
+                        BLOG("[GUIDE] Merged page %lu: templateCount=%d, score=%f from companion file",
+                             static_cast<unsigned long>(kv.first), kv.second.templateCount, kv.second.score);
                     } else {
                         // insert new page from companion file
                         this->_preconditionPages[kv.first] = kv.second;
-                        BLOG("Inserted precondition page %lu from companion file %s", static_cast<unsigned long>(kv.first), precondFilePath.c_str());
+                        BLOG("[GUIDE] Inserted new page %lu: templateCount=%d, score=%f from companion file",
+                             static_cast<unsigned long>(kv.first), kv.second.templateCount, kv.second.score);
                     }
                 }
+                BLOG("[GUIDE] After merge, total precondition pages: %zu", this->_preconditionPages.size());
+            } else {
+                BLOG("[GUIDE] Companion file not found or failed to load: %s", precondFilePath.c_str());
             }
         }
 
@@ -835,7 +949,7 @@ namespace fastbotx {
         {
             std::lock_guard<std::mutex> guard(this->_preconditionLock);
             (void)guard;
-            BLOG("Precondition pages count ended: %zu", this->_preconditionPages.size());
+            BLOG("[GUIDE] Saving %zu precondition pages...", this->_preconditionPages.size());
             for (const auto &entry : this->_preconditionPages) {
                 // persist score along with visited flag
                 std::vector<flatbuffers::Offset<fastbotx::ActionCounts>> actionCountVec;
@@ -866,7 +980,22 @@ namespace fastbotx {
                     templatesOffset = builder.CreateVector(fbTemplates.data(), fbTemplates.size());
                 }
                 auto pageOffset = CreatePreconditionPage(builder, entry.first, entry.second.score, actionCountsOffset, templatesOffset);
-                BLOG("Saved precondition page: %lu, score: %f, actions=%zu", static_cast<unsigned long>(entry.first), entry.second.score, entry.second.actionList.size());
+
+                // Log details for each page
+                BLOG("[GUIDE] Saving page %lu: score=%f, actionList.size=%zu, templateCount=%d",
+                     static_cast<unsigned long>(entry.first), entry.second.score,
+                     entry.second.actionList.size(), entry.second.templateCount);
+                // Log each template
+                for (int t = 0; t < entry.second.templateCount; ++t) {
+                    BLOG("[GUIDE] Page %lu template[%d]: seq=[%llu,%llu,%llu,%llu,%llu,%llu]",
+                         static_cast<unsigned long>(entry.first), t,
+                         static_cast<unsigned long long>(entry.second.templates[t].sequence[0]),
+                         static_cast<unsigned long long>(entry.second.templates[t].sequence[1]),
+                         static_cast<unsigned long long>(entry.second.templates[t].sequence[2]),
+                         static_cast<unsigned long long>(entry.second.templates[t].sequence[3]),
+                         static_cast<unsigned long long>(entry.second.templates[t].sequence[4]),
+                         static_cast<unsigned long long>(entry.second.templates[t].sequence[5]));
+                }
                 preconditionPagesVector.push_back(pageOffset);
             }
         }
@@ -892,7 +1021,12 @@ namespace fastbotx {
         {
             std::string precondFilePath = outputFilePath + ".precond";
             std::lock_guard<std::mutex> guard(this->_preconditionLock);
-            savePreconditionTemplatesToFile(precondFilePath, this->_preconditionPages);
+            bool saved = savePreconditionTemplatesToFile(precondFilePath, this->_preconditionPages);
+            if (saved) {
+                BLOG("[GUIDE] Saved companion file: %s (%zu pages)", precondFilePath.c_str(), this->_preconditionPages.size());
+            } else {
+                BLOG("[GUIDE] Failed to save companion file: %s", precondFilePath.c_str());
+            }
          }
      }
 
@@ -942,17 +1076,10 @@ namespace fastbotx {
             BLOG("addCurrentPageAsPrecondition(state): page already present %lu", static_cast<unsigned long>(currentPage));
         }
         // --- Record recent history actions into the precondition's actionList (no state checks) ---
+        // NOTE: Only use _previousActions. _newAction is always null when called externally via JNI
+        // (cleared by moveForward at the end of getOperate)
         {
             PreconditionInfo &info = this->_preconditionPages[currentPage];
-
-            // Debug: print _newAction status
-            if (this->_newAction != nullptr) {
-                BLOG("[GUIDE] addCurrentPageAsPrecondition: _newAction is NOT null, hash=%llu, toString=%s",
-                     static_cast<unsigned long long>(this->_newAction->hash()),
-                     this->_newAction->toString().c_str());
-            } else {
-                BLOG("[GUIDE] addCurrentPageAsPrecondition: _newAction is null");
-            }
 
             // Debug: print _previousActions
             BLOG("[GUIDE] addCurrentPageAsPrecondition: _previousActions.size()=%zu", this->_previousActions.size());
@@ -968,38 +1095,89 @@ namespace fastbotx {
             }
 
             std::vector<ActionPtr> history;
-            // collect all previous actions (newest first)
-            for (int i = (int)this->_previousActions.size() - 1; i >= 0; --i) {
+            // collect all previous actions (oldest first for template sequence)
+            for (int i = 0; i < (int)this->_previousActions.size(); ++i) {
                 history.push_back(this->_previousActions[i]);
             }
-            if (this->_newAction != nullptr) {
-                // If newAction is the same as the last previous action, skip adding it to history
-                if (!this->_previousActions.empty()) {
-                    auto lastPrev = this->_previousActions.back();
-                    if (lastPrev != nullptr && lastPrev->hash() == this->_newAction->hash()) {
-                        BDLOG("[TRACE] addCurrentPageAsPrecondition: newAction hash equals last previous action; skipping adding newAction to history");
-                    } else {
-                        history.push_back(this->_newAction);
-                    }
-                } else {
-                    history.push_back(this->_newAction);
-                }
-            }
-            BDLOG("[TRACE] addCurrentPageAsPrecondition: adding %zu history actions for page %lu", history.size(), static_cast<unsigned long>(currentPage));
+            BLOG("[GUIDE] addCurrentPageAsPrecondition: collected %zu history actions for page %lu", history.size(), static_cast<unsigned long>(currentPage));
+
+            // record each action's success count
             for (auto &a : history) {
                 if (a == nullptr) continue;
                 uint64_t ah = 0;
                 auto ana = std::dynamic_pointer_cast<ActivityNameAction>(a);
                 if (ana) {
                     ah = static_cast<uint64_t>(ana->hash());
-                    BDLOG("[TRACE] addCurrentPageAsPrecondition: history action is ActivityNameAction id=%s hash=%llu", ana->getId().c_str(), static_cast<unsigned long long>(ah));
                 } else {
                     ah = static_cast<uint64_t>(a->hash());
-                    BDLOG("[TRACE] addCurrentPageAsPrecondition: history action fallback hash=%llu toString=%s", static_cast<unsigned long long>(ah), a->toString().c_str());
                 }
                 info.actionList[ah] += 1;
             }
-            BDLOG("[TRACE] addCurrentPageAsPrecondition: page %lu now has %zu recorded actions", static_cast<unsigned long>(currentPage), info.actionList.size());
+
+            // --- Generate template from history ---
+            std::vector<uint64_t> sequence;
+            for (auto &a : history) {
+                if (a == nullptr) continue;
+                uint64_t ah = 0;
+                auto ana = std::dynamic_pointer_cast<ActivityNameAction>(a);
+                if (ana) {
+                    ah = static_cast<uint64_t>(ana->hash());
+                } else {
+                    ah = static_cast<uint64_t>(a->hash());
+                }
+                sequence.push_back(ah);
+                if (sequence.size() >= 6) break;
+            }
+
+            BLOG("[GUIDE] addCurrentPageAsPrecondition: built sequence with %zu actions for template", sequence.size());
+
+            // Check if matches existing template
+            bool matched = false;
+            for (int t = 0; t < info.templateCount; ++t) {
+                bool eq = true;
+                for (size_t i = 0; i < sequence.size() && i < 6; ++i) {
+                    if (info.templates[t].sequence[i] != sequence[i]) { eq = false; break; }
+                }
+                if (eq) { matched = true; break; }
+            }
+
+            // Create new template if not matched
+            if (!matched && !sequence.empty()) {
+                GuidancePathTemplate newT;
+                for (int i = 0; i < 6; ++i) {
+                    newT.sequence[i] = 0;
+                    newT.reliability[i] = 1.0;
+                }
+                for (size_t i = 0; i < sequence.size() && i < 6; ++i) {
+                    newT.sequence[i] = sequence[i];
+                }
+
+                // FIFO insert
+                if (info.templateCount < 5) {
+                    for (int t = info.templateCount; t > 0; --t) {
+                        info.templates[t] = info.templates[t-1];
+                    }
+                    info.templates[0] = newT;
+                    info.templateCount++;
+                    BLOG("[GUIDE] addCurrentPageAsPrecondition: created new template, templateCount=%d", info.templateCount);
+                } else {
+                    for (int t = 4; t > 0; --t) {
+                        info.templates[t] = info.templates[t-1];
+                    }
+                    info.templates[0] = newT;
+                    BLOG("[GUIDE] addCurrentPageAsPrecondition: replaced oldest template (FIFO)");
+                }
+
+                BLOG("[GUIDE] addCurrentPageAsPrecondition: new template sequence=[%llu,%llu,%llu,%llu,%llu,%llu]",
+                     static_cast<unsigned long long>(newT.sequence[0]),
+                     static_cast<unsigned long long>(newT.sequence[1]),
+                     static_cast<unsigned long long>(newT.sequence[2]),
+                     static_cast<unsigned long long>(newT.sequence[3]),
+                     static_cast<unsigned long long>(newT.sequence[4]),
+                     static_cast<unsigned long long>(newT.sequence[5]));
+            } else if (matched) {
+                BLOG("[GUIDE] addCurrentPageAsPrecondition: sequence matches existing template, skipping");
+            }
         }
          this->_coveredPreconditionsThisEpisode.insert(currentPage);
         // clear per-page attempt counts for this precondition page when added/covered
