@@ -14,6 +14,9 @@ struct ActivityTimesBuilder;
 struct ActionCounts;
 struct ActionCountsBuilder;
 
+struct PathTemplate;
+struct PathTemplateBuilder;
+
 struct PreconditionPage;
 struct PreconditionPageBuilder;
 
@@ -137,12 +140,78 @@ inline flatbuffers::Offset<ActionCounts> CreateActionCounts(
   return builder_.Finish();
 }
 
+struct PathTemplate FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
+  typedef PathTemplateBuilder Builder;
+  enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
+    VT_SEQUENCE = 4,
+    VT_RELIABILITY = 6
+  };
+  const flatbuffers::Vector<uint64_t> *sequence() const {
+    return GetPointer<const flatbuffers::Vector<uint64_t> *>(VT_SEQUENCE);
+  }
+  const flatbuffers::Vector<double> *reliability() const {
+    return GetPointer<const flatbuffers::Vector<double> *>(VT_RELIABILITY);
+  }
+  bool Verify(flatbuffers::Verifier &verifier) const {
+    return VerifyTableStart(verifier) &&
+           VerifyOffset(verifier, VT_SEQUENCE) &&
+           verifier.VerifyVector(sequence()) &&
+           VerifyOffset(verifier, VT_RELIABILITY) &&
+           verifier.VerifyVector(reliability()) &&
+           verifier.EndTable();
+  }
+};
+
+struct PathTemplateBuilder {
+  typedef PathTemplate Table;
+  flatbuffers::FlatBufferBuilder &fbb_;
+  flatbuffers::uoffset_t start_;
+  void add_sequence(flatbuffers::Offset<flatbuffers::Vector<uint64_t>> sequence) {
+    fbb_.AddOffset(PathTemplate::VT_SEQUENCE, sequence);
+  }
+  void add_reliability(flatbuffers::Offset<flatbuffers::Vector<double>> reliability) {
+    fbb_.AddOffset(PathTemplate::VT_RELIABILITY, reliability);
+  }
+  explicit PathTemplateBuilder(flatbuffers::FlatBufferBuilder &_fbb)
+        : fbb_(_fbb) {
+    start_ = fbb_.StartTable();
+  }
+  flatbuffers::Offset<PathTemplate> Finish() {
+    const auto end = fbb_.EndTable(start_);
+    auto o = flatbuffers::Offset<PathTemplate>(end);
+    return o;
+  }
+};
+
+inline flatbuffers::Offset<PathTemplate> CreatePathTemplate(
+    flatbuffers::FlatBufferBuilder &_fbb,
+    flatbuffers::Offset<flatbuffers::Vector<uint64_t>> sequence = 0,
+    flatbuffers::Offset<flatbuffers::Vector<double>> reliability = 0) {
+  PathTemplateBuilder builder_(_fbb);
+  builder_.add_reliability(reliability);
+  builder_.add_sequence(sequence);
+  return builder_.Finish();
+}
+
+inline flatbuffers::Offset<PathTemplate> CreatePathTemplateDirect(
+    flatbuffers::FlatBufferBuilder &_fbb,
+    const std::vector<uint64_t> *sequence = nullptr,
+    const std::vector<double> *reliability = nullptr) {
+  auto sequence__ = sequence ? _fbb.CreateVector<uint64_t>(*sequence) : 0;
+  auto reliability__ = reliability ? _fbb.CreateVector<double>(*reliability) : 0;
+  return fastbotx::CreatePathTemplate(
+      _fbb,
+      sequence__,
+      reliability__);
+}
+
 struct PreconditionPage FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
   typedef PreconditionPageBuilder Builder;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_HASHCODE = 4,
     VT_SCORE = 6,
-    VT_ACTION_COUNTS = 8
+    VT_ACTION_COUNTS = 8,
+    VT_TEMPLATES = 10
   };
   uint64_t hashcode() const {
     return GetField<uint64_t>(VT_HASHCODE, 0);
@@ -153,6 +222,9 @@ struct PreconditionPage FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
   const flatbuffers::Vector<flatbuffers::Offset<fastbotx::ActionCounts>> *action_counts() const {
     return GetPointer<const flatbuffers::Vector<flatbuffers::Offset<fastbotx::ActionCounts>> *>(VT_ACTION_COUNTS);
   }
+  const flatbuffers::Vector<flatbuffers::Offset<fastbotx::PathTemplate>> *templates() const {
+    return GetPointer<const flatbuffers::Vector<flatbuffers::Offset<fastbotx::PathTemplate>> *>(VT_TEMPLATES);
+  }
   bool Verify(flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
            VerifyField<uint64_t>(verifier, VT_HASHCODE) &&
@@ -160,6 +232,9 @@ struct PreconditionPage FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
            VerifyOffset(verifier, VT_ACTION_COUNTS) &&
            verifier.VerifyVector(action_counts()) &&
            verifier.VerifyVectorOfTables(action_counts()) &&
+           VerifyOffset(verifier, VT_TEMPLATES) &&
+           verifier.VerifyVector(templates()) &&
+           verifier.VerifyVectorOfTables(templates()) &&
            verifier.EndTable();
   }
 };
@@ -177,6 +252,9 @@ struct PreconditionPageBuilder {
   void add_action_counts(flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<fastbotx::ActionCounts>>> action_counts) {
     fbb_.AddOffset(PreconditionPage::VT_ACTION_COUNTS, action_counts);
   }
+  void add_templates(flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<fastbotx::PathTemplate>>> templates) {
+    fbb_.AddOffset(PreconditionPage::VT_TEMPLATES, templates);
+  }
   explicit PreconditionPageBuilder(flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
     start_ = fbb_.StartTable();
@@ -192,10 +270,12 @@ inline flatbuffers::Offset<PreconditionPage> CreatePreconditionPage(
     flatbuffers::FlatBufferBuilder &_fbb,
     uint64_t hashcode = 0,
     double score = 0.0,
-    flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<fastbotx::ActionCounts>>> action_counts = 0) {
+    flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<fastbotx::ActionCounts>>> action_counts = 0,
+    flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<fastbotx::PathTemplate>>> templates = 0) {
   PreconditionPageBuilder builder_(_fbb);
   builder_.add_score(score);
   builder_.add_hashcode(hashcode);
+  builder_.add_templates(templates);
   builder_.add_action_counts(action_counts);
   return builder_.Finish();
 }
@@ -204,13 +284,16 @@ inline flatbuffers::Offset<PreconditionPage> CreatePreconditionPageDirect(
     flatbuffers::FlatBufferBuilder &_fbb,
     uint64_t hashcode = 0,
     double score = 0.0,
-    const std::vector<flatbuffers::Offset<fastbotx::ActionCounts>> *action_counts = nullptr) {
+    const std::vector<flatbuffers::Offset<fastbotx::ActionCounts>> *action_counts = nullptr,
+    const std::vector<flatbuffers::Offset<fastbotx::PathTemplate>> *templates = nullptr) {
   auto action_counts__ = action_counts ? _fbb.CreateVector<flatbuffers::Offset<fastbotx::ActionCounts>>(*action_counts) : 0;
+  auto templates__ = templates ? _fbb.CreateVector<flatbuffers::Offset<fastbotx::PathTemplate>>(*templates) : 0;
   return fastbotx::CreatePreconditionPage(
       _fbb,
       hashcode,
       score,
-      action_counts__);
+      action_counts__,
+      templates__);
 }
 
 struct ReuseEntry FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {

@@ -26,18 +26,39 @@ namespace fastbotx {
     typedef std::map<uint64_t, ReuseEntryM> ReuseEntryIntMap;
     typedef std::map<uint64_t, double> ReuseEntryQValueMap;
 
+    // Path template for a precondition page: sequence of up to 6 action hashes (start->end) and per-step reliability
+    // Renamed to GuidancePathTemplate to avoid collision with FlatBuffers-generated PathTemplate
+    struct GuidancePathTemplate {
+        uint64_t sequence[6];
+        double reliability[6];
+        GuidancePathTemplate() {
+            for (int i = 0; i < 6; ++i) {
+                sequence[i] = 0;
+                reliability[i] = 0.5; // default reliability
+            }
+        }
+    };
+
     struct PreconditionInfo {
         double score;
         // List mapping action hash -> successful reach count for this precondition page
         std::unordered_map<uint64_t, int> actionList;
-        PreconditionInfo() : score(1.0) {}
-        PreconditionInfo(double s) : score(s) {}
+        GuidancePathTemplate templates[5];
+        int templateCount = 0; // actual number of templates stored (<=5)
+        PreconditionInfo() : score(1.0), templateCount(0) {}
+        explicit PreconditionInfo(double s) : score(s), templateCount(0) {}
     };
 
     class ModelReusableAgent : public AbstractAgent {
 
     public:
         explicit ModelReusableAgent(const ModelPtr &model);
+        // Pending guided-target utilities: allow external caller (Model) to pop pending target for an action
+        uintptr_t popPendingGuidedTarget(uint64_t actionHash);
+        void setPendingGuidedTarget(uint64_t actionHash, uintptr_t pageHash);
+        // Expose feedback API publicly so Model can notify results
+        void processGuidedActionResult(const ActionPtr &action, uintptr_t targetPageHash, bool reached,
+                                       const std::vector<uint64_t> &episodePath);
 
         // load & save will be automatically called in construct & dealloc
         virtual void loadReuseModel(const std::string &packageName);
@@ -157,6 +178,19 @@ namespace fastbotx {
 
         // runtime: per-precondition per-action attempt counts during guidance phase
         std::unordered_map<uintptr_t, std::unordered_map<uint64_t, int>> _guidanceAttemptCounts;
+
+        // Runtime-only state for steering the guided algorithm (non-persisted)
+        std::unordered_map<uint64_t, int> _consecutiveFails; // actionHash -> consecutive fails this episode
+        std::unordered_map<uintptr_t, int> _lastPosition; // pageHash -> last chosen position in template
+        int _noProgressCount = 0; // consecutive no-progress attempts in this episode
+        // Pending guided action targets: actionHash -> targetPageHash; used to evaluate reach/fail when next state observed
+        std::unordered_map<uint64_t, uintptr_t> _pendingGuidedTargets;
+        // Age counters for pending guided targets; incremented each select call; if age > _pending_max_age -> treat as failure
+        std::unordered_map<uint64_t, int> _pendingGuidedAges;
+        int _pending_max_age = 2; // default threshold (steps) before aging a pending guided action to failure
+
+        // Internal helper: process feedback when only action hash is available
+        void processGuidedActionResultByHash(uint64_t actionHash, uintptr_t targetPageHash, bool reached);
     };
 
     typedef std::shared_ptr<ModelReusableAgent> ReuseAgentPtr;

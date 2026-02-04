@@ -30,10 +30,21 @@ table ActionCounts {
     times: int;
 }
 
+// PathTemplate stores a sequence of up to 6 action hashes and a reliability (double) per step.
+// Using vectors keeps the schema flexible; consumer code may expect fixed-length arrays of length 6.
+table PathTemplate {
+    // sequence of action hashes (ulong), index 0 start .. index 5 end (may be shorter)
+    sequence: [ulong];
+    // per-step reliability values in range [0,1]
+    reliability: [double];
+}
+
 table PreconditionPage {
     hashcode: ulong;
     score: double;
     action_counts: [ActionCounts];
+    // optional templates persisted in flatbuffer for compatibility; may be absent in older files
+    templates: [PathTemplate];
 }
 
 table ReuseEntry {

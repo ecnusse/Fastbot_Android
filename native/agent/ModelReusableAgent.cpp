@@ -17,18 +17,159 @@
 #include <limits>
 #include <mutex>
 #include <utility>
+#include <unordered_map>
+#include <type_traits>
+
+// Trait to detect presence of templates() on PreconditionPage pointer type
+namespace {
+    template<typename T>
+    class has_templates_method {
+        template<typename U>
+        static auto test(int) -> decltype(std::declval<U>()->templates(), std::true_type()) { return std::true_type(); }
+        template<typename>
+        static std::false_type test(...) { return std::false_type(); }
+    public:
+        static constexpr bool value = decltype(test<T>(0))::value;
+    };
+}
+
+// Persistence helpers for precondition templates (companion .precond binary file)
+namespace {
+    bool savePreconditionTemplatesToFile(const std::string &filePath,
+                                         const std::unordered_map<uintptr_t, fastbotx::PreconditionInfo> &pages) {
+        std::ofstream out(filePath, std::ios::binary | std::ios::out);
+        if (!out.is_open()) return false;
+        out.write("PCTL", 4);
+        uint32_t version = 1;
+        out.write(reinterpret_cast<const char *>(&version), sizeof(version));
+        uint64_t entryCount = static_cast<uint64_t>(pages.size());
+        out.write(reinterpret_cast<const char *>(&entryCount), sizeof(entryCount));
+        for (const auto &kv : pages) {
+            uint64_t pageHash = static_cast<uint64_t>(kv.first);
+            double score = kv.second.score;
+            uint32_t tcount = static_cast<uint32_t>(kv.second.templateCount);
+            out.write(reinterpret_cast<const char *>(&pageHash), sizeof(pageHash));
+            out.write(reinterpret_cast<const char *>(&score), sizeof(score));
+            out.write(reinterpret_cast<const char *>(&tcount), sizeof(tcount));
+            for (int t = 0; t < 5; ++t) {
+                const fastbotx::GuidancePathTemplate &pt = kv.second.templates[t];
+                for (int i = 0; i < 6; ++i) {
+                    uint64_t seq = static_cast<uint64_t>(pt.sequence[i]);
+                    out.write(reinterpret_cast<const char *>(&seq), sizeof(seq));
+                }
+                for (int i = 0; i < 6; ++i) {
+                    double rel = pt.reliability[i];
+                    out.write(reinterpret_cast<const char *>(&rel), sizeof(rel));
+                }
+            }
+        }
+        out.close();
+        return true;
+    }
+
+    bool loadPreconditionTemplatesFromFile(const std::string &filePath,
+                                           std::unordered_map<uintptr_t, fastbotx::PreconditionInfo> &pages) {
+        std::ifstream in(filePath, std::ios::binary | std::ios::in);
+        if (!in.is_open()) return false;
+        char magic[4];
+        in.read(magic, 4);
+        if (in.gcount() != 4 || std::string(magic, 4) != "PCTL") {
+            in.close();
+            return false;
+        }
+        uint32_t version = 0;
+        in.read(reinterpret_cast<char *>(&version), sizeof(version));
+        if (version != 1) { in.close(); return false; }
+        uint64_t entryCount = 0;
+        in.read(reinterpret_cast<char *>(&entryCount), sizeof(entryCount));
+        for (uint64_t e = 0; e < entryCount; ++e) {
+            uint64_t pageHash = 0;
+            double score = 1.0;
+            uint32_t tcount = 0;
+            in.read(reinterpret_cast<char *>(&pageHash), sizeof(pageHash));
+            in.read(reinterpret_cast<char *>(&score), sizeof(score));
+            in.read(reinterpret_cast<char *>(&tcount), sizeof(tcount));
+            fastbotx::PreconditionInfo info;
+            info.score = score;
+            info.templateCount = static_cast<int>(std::min<uint32_t>(tcount, 5u));
+            for (int t = 0; t < 5; ++t) {
+                for (int i = 0; i < 6; ++i) {
+                    uint64_t seq = 0;
+                    in.read(reinterpret_cast<char *>(&seq), sizeof(seq));
+                    info.templates[t].sequence[i] = static_cast<uint64_t>(seq);
+                }
+                for (int i = 0; i < 6; ++i) {
+                    double rel = 0.0;
+                    in.read(reinterpret_cast<char *>(&rel), sizeof(rel));
+                    info.templates[t].reliability[i] = rel;
+                }
+            }
+            pages[static_cast<uintptr_t>(pageHash)] = info;
+        }
+        in.close();
+        return true;
+    }
+
+    // loadTemplatesFromFBPage: when PreconditionPage has templates(), read into PreconditionInfo
+    template<typename PagePtr>
+    typename std::enable_if<has_templates_method<PagePtr>::value, void>::type
+    loadTemplatesFromFBPage(PagePtr page, fastbotx::PreconditionInfo &info) {
+        if (!page) return;
+        auto fbTemplates = page->templates();
+        if (!fbTemplates) return;
+        int available = static_cast<int>(fbTemplates->size());
+        info.templateCount = std::min(available, 5);
+        for (int t = 0; t < info.templateCount; ++t) {
+            auto fbT = fbTemplates->Get(t);
+            if (!fbT) continue;
+            // sequence
+            if (fbT->sequence() != nullptr) {
+                auto seqVec = fbT->sequence();
+                for (int i = 0; i < 6; ++i) {
+                    if (i < static_cast<int>(seqVec->size())) info.templates[t].sequence[i] = seqVec->Get(i);
+                    else info.templates[t].sequence[i] = 0;
+                }
+            } else {
+                for (int i = 0; i < 6; ++i) info.templates[t].sequence[i] = 0;
+            }
+            // reliability
+            if (fbT->reliability() != nullptr) {
+                auto relVec = fbT->reliability();
+                for (int i = 0; i < 6; ++i) {
+                    if (i < static_cast<int>(relVec->size())) info.templates[t].reliability[i] = relVec->Get(i);
+                    else info.templates[t].reliability[i] = 0.0;
+                }
+            } else {
+                for (int i = 0; i < 6; ++i) info.templates[t].reliability[i] = 0.0;
+            }
+        }
+        // initialize unused template slots
+        for (int t = info.templateCount; t < 5; ++t) {
+            for (int i = 0; i < 6; ++i) {
+                info.templates[t].sequence[i] = 0;
+                info.templates[t].reliability[i] = 0.0;
+            }
+        }
+    }
+
+    // fallback when templates() doesn't exist: no-op
+    template<typename PagePtr>
+    typename std::enable_if<!has_templates_method<PagePtr>::value, void>::type
+    loadTemplatesFromFBPage(PagePtr, fastbotx::PreconditionInfo &) {
+        // no templates in schema
+    }
+} // anonymous namespace
 
 namespace fastbotx {
 
     ModelReusableAgent::ModelReusableAgent(const ModelPtr &model)
             : AbstractAgent(model), _alpha(SarsaRLDefaultAlpha), _epsilon(SarsaRLDefaultEpsilon),
-              _modelSavePath(DefaultModelSavePath), _defaultModelSavePath(DefaultModelSavePath) {
+              _modelSavePath(DefaultModelSavePath), _defaultModelSavePath(DefaultModelSavePath),
+              _precond_alpha(0.15), _hit_decay(0.95), _min_score(0.1), _precond_lambda(1.0),
+              _sigmoid_k(1.0), _sigmoid_b(0.5), _guidance_gamma(0.1), _guidance_action_attempt_limit(10),
+              _guidance_history_len(6), _attempt_fail_decay(0.8) {
         this->_algorithmType = AlgorithmType::Reuse;
         // guidance hyperparams defaults
-        this->_guidance_gamma = 0.1;
-        this->_guidance_action_attempt_limit = 10;
-        this->_guidance_history_len = 6;
-        this->_attempt_fail_decay = 0.8; // each failed attempt multiplies probability by this (per-episode)
     }
 
     ModelReusableAgent::~ModelReusableAgent() {
@@ -190,6 +331,37 @@ namespace fastbotx {
                               currentQValue + this->_alpha * (value - currentQValue));
             }
 
+            // --- Process pending guided action feedback ---
+            // Check if the last action was a guided action and process its result
+            if (!this->_previousActions.empty() && this->_newState != nullptr) {
+                ActionPtr lastAction = this->_previousActions.back();
+                if (lastAction != nullptr) {
+                    uint64_t lastActionHash = static_cast<uint64_t>(lastAction->hash());
+                    uintptr_t currentPageHash = this->_newState->hash();
+
+                    // Check if this action had a pending guided target
+                    auto pendingIt = this->_pendingGuidedTargets.find(lastActionHash);
+                    if (pendingIt != this->_pendingGuidedTargets.end()) {
+                        uintptr_t targetPageHash = pendingIt->second;
+                        bool reached = (currentPageHash == targetPageHash);
+
+                        BLOG("[GUIDE] Processing guided action result: action=%llu targetPage=%lu currentPage=%lu reached=%d",
+                             static_cast<unsigned long long>(lastActionHash),
+                             static_cast<unsigned long>(targetPageHash),
+                             static_cast<unsigned long>(currentPageHash),
+                             reached);
+
+                        // Call the feedback handler
+                        std::vector<uint64_t> episodePath; // empty for now
+                        this->processGuidedActionResult(lastAction, targetPageHash, reached, episodePath);
+
+                        // Remove from pending
+                        this->_pendingGuidedTargets.erase(pendingIt);
+                        this->_pendingGuidedAges.erase(lastActionHash);
+                    }
+                }
+            }
+
             // --- Record history of actions to precondition model when arriving at a known precondition page ---
             // Skip entirely if there is no new state or if the current page is not a persisted precondition page.
             if (nullptr == this->_newState) {
@@ -274,161 +446,94 @@ namespace fastbotx {
     // Guidance: select an action guided by precondition action-success probabilities
     ActionPtr ModelReusableAgent::selectGuidedActionForPrecondition() {
         if (nullptr == this->_newState) return nullptr;
-        // quick checks
+
+        // 1. Build candidates: pages not covered this episode, score>=0.3, have templates
+        std::vector<std::pair<uintptr_t, PreconditionInfo*>> candidates;
         {
             std::lock_guard<std::mutex> guard(this->_preconditionLock);
-            (void)guard;
-            if (this->_preconditionPages.empty()) return nullptr;
-            // if we've already covered all preconditions this episode, stop guidance
-            if (this->_coveredPreconditionsThisEpisode.size() >= this->_preconditionPages.size()) return nullptr;
+            for (auto &kv : this->_preconditionPages) {
+                auto &pageHash = kv.first;
+                auto &info = kv.second;
+                if (this->_coveredPreconditionsThisEpisode.find(pageHash) != this->_coveredPreconditionsThisEpisode.end()) continue;
+                if (info.score < 0.3) continue;
+                if (info.templateCount == 0) continue;
+                candidates.emplace_back(pageHash, &info);
+            }
+        }
+        if (candidates.empty()) return nullptr;
+
+        // 2. Global decay on candidate templates' reliabilities (spec allows decaying at selection time)
+        for (auto &c : candidates) {
+            PreconditionInfo *info = c.second;
+            for (int t = 0; t < info->templateCount; ++t) {
+                for (int i = 0; i < 6; ++i) info->templates[t].reliability[i] *= 0.95;
+            }
         }
 
-        // New behavior: consider any action on current page that appears in any precondition's actionList.
-        // Map actionHash -> ActionPtr for actions present on current page
+        // 3. Prepare map of actions on current page
         std::unordered_map<uint64_t, ActionPtr> pageActions;
-        auto pageActionsVec = this->_newState->getActions();
-        for (auto &action : pageActionsVec) {
-            uint64_t ah = static_cast<uint64_t>(action->hash());
-            pageActions[ah] = action;
-        }
-        BLOG("[GUIDE] selectGuidedActionForPrecondition: currentPage=%lu, pageActions=%zu, preconditionPages=%zu, coveredThisEpisode=%zu",
-             static_cast<unsigned long>(this->_newState->hash()), pageActions.size(), this->_preconditionPages.size(), this->_coveredPreconditionsThisEpisode.size());
+        for (auto &a : this->_newState->getActions()) pageActions[static_cast<uint64_t>(a->hash())] = a;
 
-        // For each action on the page, find which precondition pages it can reach (from _preconditionPages)
-        // and compute the best probability for that action (best over target preconditions).
-        double bestOverallP = -1.0;
-        struct Candidate { uint64_t actionHash; ActionPtr action; uintptr_t targetPage; double p; };
-        std::vector<Candidate> candidatesList;
-        const double EPS = 1e-12;
+        // 4. Evaluate templates: reversed positions
+        ActionPtr bestAction = nullptr;
+        double bestScore = -1.0;
+        uintptr_t bestPage = 0;
+        int bestPos = -1;
 
-        // iterate precondition pages and match their actionLists against pageActions
-        for (const auto &entry : this->_preconditionPages) {
-            uintptr_t prePage = entry.first;
-            const PreconditionInfo &info = entry.second;
-            if (info.actionList.empty()) continue; // no data for this precondition
-            // Skip prePage if already covered this episode
-            if (this->_coveredPreconditionsThisEpisode.find(prePage) != this->_coveredPreconditionsThisEpisode.end()) {
-                BDLOG("[GUIDE] skip prePage %lu (already covered this episode)", static_cast<unsigned long>(prePage));
-                continue;
-            }
-            BDLOG("[GUIDE] evaluating prePage %lu: actionList size=%zu, score=%f", static_cast<unsigned long>(prePage), info.actionList.size(), info.score);
-            for (const auto &ac : info.actionList) {
-                uint64_t ah = ac.first;
-                int succCount = ac.second;
-                auto pit = pageActions.find(ah);
-                if (pit == pageActions.end()) {
-                    BDLOG("[GUIDE]   action hash %llu not present on current page", static_cast<unsigned long long>(ah));
-                    continue; // this action not available in current page
+        for (auto &entry : candidates) {
+            uintptr_t pageHash = entry.first;
+            PreconditionInfo *info = entry.second;
+            for (int t = 0; t < info->templateCount; ++t) {
+                GuidancePathTemplate &templ = info->templates[t];
+                for (int pos = 5; pos >= 0; --pos) {
+                    uint64_t actionHash = templ.sequence[pos];
+                    if (actionHash == 0) continue;
+                    auto it = pageActions.find(actionHash);
+                    if (it == pageActions.end()) continue;
+                    ActionPtr action = it->second;
+                    int cf = 0;
+                    auto cfit = this->_consecutiveFails.find(actionHash);
+                    if (cfit != this->_consecutiveFails.end()) cf = cfit->second;
+                    if (cf >= 3) { templ.reliability[pos] = 0.0; continue; }
+                    double P = static_cast<double>(pos) / 5.0;
+                    double R = templ.reliability[pos];
+                    double C = info->score / 2.0;
+                    double score = 0.5 * P + 0.3 * R + 0.2 * C;
+                    if (score > bestScore) {
+                        bestScore = score;
+                        bestAction = action;
+                        bestPage = pageHash;
+                        bestPos = pos;
+                    }
+                    break; // stop after first valid position in this template
                 }
-                ActionPtr actionPtr = pit->second;
-                // check attempt limit for this page-action
-                if (isActionOverAttemptLimit(prePage, ah)) {
-                    BDLOG("[GUIDE]   action %llu -> prePage %lu skipped due to attempt limit", static_cast<unsigned long long>(ah), static_cast<unsigned long>(prePage));
-                    continue;
-                }
-                // compute probability to reach this precondition via this action
-                double p = computePreconditionActionProbability(prePage, actionPtr);
-                BDLOG("[GUIDE]   candidate action %llu -> page %lu: succ=%d, actionVisited=%d, scorePre=%f, p=%f",
-                      static_cast<unsigned long long>(ah), static_cast<unsigned long>(prePage), succCount, actionPtr->getVisitedCount(), info.score, p);
-                if (p <= 0.0) {
-                    BDLOG("[GUIDE]     computed p<=0, skip");
-                    continue;
-                }
-                // record candidate: action may reach this prePage with prob p
-                candidatesList.push_back(Candidate{ah, actionPtr, prePage, p});
-                if (p > bestOverallP + EPS) bestOverallP = p;
             }
         }
 
-        if (candidatesList.empty() || bestOverallP < 0.0) {
-            // no usable guidance candidates found on this page -> fallback
-            BDLOG("[GUIDE] no guidance candidates found (candidatesList=%zu, bestOverallP=%f)", candidatesList.size(), bestOverallP);
-            return nullptr;
-        }
-
-        // collect actions that achieve the bestOverallP (within EPS), but we must pick per action the best target page
-        // group by actionHash and choose the target page with max p for that action
-        std::unordered_map<uint64_t, Candidate> bestPerAction;
-        for (auto &c : candidatesList) {
-            auto itb = bestPerAction.find(c.actionHash);
-            if (itb == bestPerAction.end() || c.p > itb->second.p + EPS) {
-                bestPerAction[c.actionHash] = c;
-            }
-        }
-
-        BDLOG("[GUIDE] candidatesList=%zu, bestPerAction=%zu, bestOverallP=%f", candidatesList.size(), bestPerAction.size(), bestOverallP);
-        for (const auto &kv : bestPerAction) {
-            const Candidate &c = kv.second;
-            // try to print action details
-            std::string actDesc = (c.action ? c.action->toString() : std::string("<null>"));
-            BDLOG("[GUIDE] bestPerAction: actionHash=%llu, targetPage=%lu, p=%f, actDesc=%s",
-                  static_cast<unsigned long long>(c.actionHash), static_cast<unsigned long>(c.targetPage), c.p, actDesc.c_str());
-        }
-
-        // Now find actions whose bestPerAction.p equals bestOverallP (within EPS)
-        std::vector<Candidate> bestActions;
-        for (const auto &kv : bestPerAction) {
-            const Candidate &c = kv.second;
-            if (std::fabs(c.p - bestOverallP) <= EPS) bestActions.push_back(c);
-        }
-
-        if (bestActions.empty()) return nullptr;
-
-        // tie-break among bestActions uniformly
-        int pickIdx = 0;
-        if (bestActions.size() == 1) pickIdx = 0;
-        else pickIdx = randomInt(0, static_cast<int>(bestActions.size() - 1));
-        Candidate chosen = bestActions[pickIdx];
-
-        // increment attempt count for the chosen page-action pair
-        int newAttempts = ++this->_guidanceAttemptCounts[chosen.targetPage][chosen.actionHash];
-        // extra logs for chosen
-        std::string chosenDesc = (chosen.action ? chosen.action->toString() : std::string("<null>"));
-        BLOG("[GUIDE] Guidance chosen actionHash=%llu for target precondition page=%lu with p=%f attempts=%d; actionDesc=%s",
-             static_cast<unsigned long long>(chosen.actionHash), static_cast<unsigned long>(chosen.targetPage), chosen.p, newAttempts, chosenDesc.c_str());
-        return chosen.action;
+        if (!bestAction) return nullptr;
+        this->_lastPosition[bestPage] = bestPos;
+        this->_guidanceAttemptCounts[bestPage][static_cast<uint64_t>(bestAction->hash())]++;
+        // set pending guided target so feedback can be applied when action result is observed
+        this->setPendingGuidedTarget(static_cast<uint64_t>(bestAction->hash()), bestPage);
+        BLOG("[GUIDE] exit selectGuidedActionForPrecondition: chosen_hash=%llu page=%lu pos=%d bestScore=%.4f attemptsForPage=%d",
+             static_cast<unsigned long long>(bestAction->hash()), static_cast<unsigned long>(bestPage), bestPos, bestScore,
+             this->_guidanceAttemptCounts[bestPage][static_cast<uint64_t>(bestAction->hash())]);
+        return bestAction;
     }
 
-    // Compute guidance probability P(A) for action A to reach a precondition page
-    // Formula: P(A) = (count(A->Pre) / total_clicks(A)) * scorePre * Rmulti(A)
-    double ModelReusableAgent::computePreconditionActionProbability(uintptr_t pageHash, const ActionPtr &action) const {
-        if (action == nullptr) return 0.0;
-        auto it = this->_preconditionPages.find(pageHash);
-        if (it == this->_preconditionPages.end()) return 0.0;
-        const PreconditionInfo &info = it->second;
-        uint64_t ah = static_cast<uint64_t>(action->hash());
-        auto iter = info.actionList.find(ah);
-        if (iter == info.actionList.end()) return 0.0; // no recorded successes
-        int countToPre = iter->second;
-        // Use aggregated total clicks from reuse model, not action->getVisitedCount()
-        int totalClicks = this->getTotalClicksForAction(ah);
-        if (totalClicks <= 0) totalClicks = std::max(1, action->getVisitedCount()); // fallback
-        double scorePre = info.score;
-        // compute k (number of preconditions this action can reach)
-        int k = 0;
-        for (const auto &p : this->_preconditionPages) {
-            if (p.second.actionList.find(ah) != p.second.actionList.end()) ++k;
-        }
-        double Rmulti = 1.0 + _guidance_gamma * sqrt((double)k);
-        double baseP = (static_cast<double>(countToPre) / static_cast<double>(totalClicks)) * scorePre * Rmulti;
-        // Apply per-episode attempt-failure decay: the more we've tried this page-action in this episode and failed, the more we decay its probability
-        double decayedP = baseP;
-        auto pit = this->_guidanceAttemptCounts.find(pageHash);
-        if (pit != this->_guidanceAttemptCounts.end()) {
-            auto ait = pit->second.find(ah);
-            if (ait != pit->second.end() && ait->second > 0) {
-                int attempts = ait->second;
-                // decay factor: attempt_fail_decay ^ attempts
-                double decayFactor = pow(this->_attempt_fail_decay, attempts);
-                decayedP = baseP * decayFactor;
-                BDLOG("[GUIDE] apply attempt-fail decay: attempts=%d decayFactor=%f baseP=%f decayedP=%f", attempts, decayFactor, baseP, decayedP);
-            }
-        }
-        BDLOG("[GUIDE] computePreconditionActionProbability: actionHash=%llu page=%lu countToPre=%d totalClicks=%d scorePre=%f k=%d Rmulti=%f baseP=%f decayedP=%f",
-              static_cast<unsigned long long>(ah), static_cast<unsigned long>(pageHash), countToPre, totalClicks, scorePre, k, Rmulti, baseP, decayedP);
-        return decayedP;
+    uintptr_t ModelReusableAgent::popPendingGuidedTarget(uint64_t actionHash) {
+        std::lock_guard<std::mutex> guard(this->_preconditionLock);
+        auto it = this->_pendingGuidedTargets.find(actionHash);
+        if (it == this->_pendingGuidedTargets.end()) return 0;
+        uintptr_t p = it->second;
+        this->_pendingGuidedTargets.erase(it);
+        return p;
     }
 
+    void ModelReusableAgent::setPendingGuidedTarget(uint64_t actionHash, uintptr_t pageHash) {
+        std::lock_guard<std::mutex> guard(this->_preconditionLock);
+        this->_pendingGuidedTargets[actionHash] = pageHash;
+    }
 
     /// If the new action is generated,
     ActionPtr ModelReusableAgent::selectNewAction() {
@@ -482,11 +587,10 @@ namespace fastbotx {
     }
 
     bool ModelReusableAgent::eGreedy() const {
-        srand((uint32_t) (int) time(nullptr)); // @TODO the random range
-        auto r = static_cast<double>(static_cast<double>(rand() % 100) / 100.0L);
-        if (r < this->_epsilon)
-            return false;
-        return true;
+        // use existing randomInt helper to avoid reseeding global RNG repeatedly
+        int v = randomInt(0, 100); // returns 0..99
+        double r = static_cast<double>(v) / 100.0;
+        return !(r < this->_epsilon);
     }
 
     ActionPtr ModelReusableAgent::selectUnperformedActionNotInReuseModel() const {
@@ -669,6 +773,8 @@ namespace fastbotx {
                             info.actionList[ah] = times;
                         }
                     }
+                    // load templates from flatbuffer page when schema provides them (compatible)
+                    loadTemplatesFromFBPage(page, info);
                     this->_preconditionPages[pageName] = info;
                     BLOG("Loaded precondition page: %lu, score: %f", static_cast<unsigned long>(pageName), info.score);
                 }
@@ -676,7 +782,28 @@ namespace fastbotx {
                 BLOG("No precondition pages found in the model.");
             }
         }
-        // end read precondition pages
+        // --- Load companion precondition templates file if exists ---
+        {
+            std::string precondFilePath = modelFilePath + ".precond";
+            std::unordered_map<uintptr_t, PreconditionInfo> filePages;
+            if (loadPreconditionTemplatesFromFile(precondFilePath, filePages)) {
+                std::lock_guard<std::mutex> guard(this->_preconditionLock);
+                for (const auto &kv : filePages) {
+                    auto it = this->_preconditionPages.find(kv.first);
+                    if (it != this->_preconditionPages.end()) {
+                        // overwrite templates, templateCount and score from file
+                        it->second.templateCount = kv.second.templateCount;
+                        it->second.score = kv.second.score;
+                        for (int t = 0; t < 5; ++t) it->second.templates[t] = kv.second.templates[t];
+                        BLOG("Merged precondition templates for page %lu from %s", static_cast<unsigned long>(kv.first), precondFilePath.c_str());
+                    } else {
+                        // insert new page from companion file
+                        this->_preconditionPages[kv.first] = kv.second;
+                        BLOG("Inserted precondition page %lu from companion file %s", static_cast<unsigned long>(kv.first), precondFilePath.c_str());
+                    }
+                }
+            }
+        }
 
         delete[] modelFileData;
     }
@@ -719,7 +846,26 @@ namespace fastbotx {
                 flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<fastbotx::ActionCounts>>> actionCountsOffset = 0;
                 if (!actionCountVec.empty()) actionCountsOffset = builder.CreateVector(actionCountVec.data(), actionCountVec.size());
                 // Create PreconditionPage with (hashcode, score, action_counts) according to updated schema
-                auto pageOffset = CreatePreconditionPage(builder, entry.first, entry.second.score, actionCountsOffset);
+                // prepare templates if any
+                flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<fastbotx::PathTemplate>>> templatesOffset = 0;
+                if (entry.second.templateCount > 0) {
+                    std::vector<flatbuffers::Offset<fastbotx::PathTemplate>> fbTemplates;
+                    for (int t = 0; t < entry.second.templateCount && t < 5; ++t) {
+                        const fastbotx::GuidancePathTemplate &pt = entry.second.templates[t];
+                        std::vector<uint64_t> seqVec;
+                        std::vector<double> relVec;
+                        for (int i = 0; i < 6; ++i) {
+                            seqVec.push_back(pt.sequence[i]);
+                            relVec.push_back(pt.reliability[i]);
+                        }
+                        auto seqOff = builder.CreateVector<uint64_t>(seqVec);
+                        auto relOff = builder.CreateVector<double>(relVec);
+                        auto fbPt = fastbotx::CreatePathTemplate(builder, seqOff, relOff);
+                        fbTemplates.push_back(fbPt);
+                    }
+                    templatesOffset = builder.CreateVector(fbTemplates.data(), fbTemplates.size());
+                }
+                auto pageOffset = CreatePreconditionPage(builder, entry.first, entry.second.score, actionCountsOffset, templatesOffset);
                 BLOG("Saved precondition page: %lu, score: %f, actions=%zu", static_cast<unsigned long>(entry.first), entry.second.score, entry.second.actionList.size());
                 preconditionPagesVector.push_back(pageOffset);
             }
@@ -741,27 +887,34 @@ namespace fastbotx {
         std::ofstream outputFile(outputFilePath);
         outputFile.write((char *) builder.GetBufferPointer(), static_cast<int>(builder.GetSize()));
         outputFile.close();
-    }
 
-//    void ModelReusableAgent::addCurrentPageAsPrecondition() {
-//        if (nullptr == this->_newState) {
-//            BLOG("addCurrentPageAsPrecondition: _newState is null");
-//            return;
-//        }
-//        uintptr_t currentPage = this->_newState->hash();
-//        std::lock_guard<std::mutex> guard(this->_preconditionLock);
-//        (void)guard;
-//        auto it = this->_preconditionPages.find(currentPage);
-//        if (it == this->_preconditionPages.end()) {
-//            PreconditionInfo newInfo;
-//            newInfo.score = 1.0;
-//            this->_preconditionPages[currentPage] = newInfo;
-//            BLOG("Added current page as a precondition page: %lu", static_cast<unsigned long>(currentPage));
-//        }
-//        // mark as covered for this episode to avoid immediate guidance
-//        this->_coveredPreconditionsThisEpisode.insert(currentPage);
-//        BLOG("Precondition pages count after add: %zu", this->_preconditionPages.size());
-//    }
+        // --- Save companion precondition templates to file ---
+        {
+            std::string precondFilePath = outputFilePath + ".precond";
+            std::lock_guard<std::mutex> guard(this->_preconditionLock);
+            savePreconditionTemplatesToFile(precondFilePath, this->_preconditionPages);
+         }
+     }
+
+    //    void ModelReusableAgent::addCurrentPageAsPrecondition() {
+    //        if (nullptr == this->_newState) {
+    //            BLOG("addCurrentPageAsPrecondition: _newState is null");
+    //            return;
+    //        }
+    //        uintptr_t currentPage = this->_newState->hash();
+    //        std::lock_guard<std::mutex> guard(this->_preconditionLock);
+    //        (void)guard;
+    //        auto it = this->_preconditionPages.find(currentPage);
+    //        if (it == this->_preconditionPages.end()) {
+    //            PreconditionInfo newInfo;
+    //            newInfo.score = 1.0;
+    //            this->_preconditionPages[currentPage] = newInfo;
+    //            BLOG("Added current page as a precondition page: %lu", static_cast<unsigned long>(currentPage));
+    //        }
+    //        // mark as covered for this episode to avoid immediate guidance
+    //        this->_coveredPreconditionsThisEpisode.insert(currentPage);
+    //        BLOG("Precondition pages count after add: %zu", this->_preconditionPages.size());
+    //    }
 
     void ModelReusableAgent::addCurrentPageAsPrecondition(const StatePtr &state) {
         if (state == nullptr) {
@@ -775,6 +928,14 @@ namespace fastbotx {
         if (it == this->_preconditionPages.end()) {
             PreconditionInfo newInfo;
             newInfo.score = 1.0;
+            newInfo.templateCount = 0;
+            // initialize template slots
+            for (int t = 0; t < 5; ++t) {
+                for (int i = 0; i < 6; ++i) {
+                    newInfo.templates[t].sequence[i] = 0;
+                    newInfo.templates[t].reliability[i] = 0.0;
+                }
+            }
             this->_preconditionPages[currentPage] = newInfo;
             BLOG("Added current page (from external state) as a precondition page: %lu", static_cast<unsigned long>(currentPage));
         } else {
@@ -783,6 +944,29 @@ namespace fastbotx {
         // --- Record recent history actions into the precondition's actionList (no state checks) ---
         {
             PreconditionInfo &info = this->_preconditionPages[currentPage];
+
+            // Debug: print _newAction status
+            if (this->_newAction != nullptr) {
+                BLOG("[GUIDE] addCurrentPageAsPrecondition: _newAction is NOT null, hash=%llu, toString=%s",
+                     static_cast<unsigned long long>(this->_newAction->hash()),
+                     this->_newAction->toString().c_str());
+            } else {
+                BLOG("[GUIDE] addCurrentPageAsPrecondition: _newAction is null");
+            }
+
+            // Debug: print _previousActions
+            BLOG("[GUIDE] addCurrentPageAsPrecondition: _previousActions.size()=%zu", this->_previousActions.size());
+            for (int i = 0; i < (int)this->_previousActions.size(); ++i) {
+                if (this->_previousActions[i] != nullptr) {
+                    BLOG("[GUIDE] addCurrentPageAsPrecondition: _previousActions[%d] hash=%llu, toString=%s",
+                         i,
+                         static_cast<unsigned long long>(this->_previousActions[i]->hash()),
+                         this->_previousActions[i]->toString().c_str());
+                } else {
+                    BLOG("[GUIDE] addCurrentPageAsPrecondition: _previousActions[%d] is null", i);
+                }
+            }
+
             std::vector<ActionPtr> history;
             // collect all previous actions (newest first)
             for (int i = (int)this->_previousActions.size() - 1; i >= 0; --i) {
@@ -830,27 +1014,98 @@ namespace fastbotx {
          this->_guidanceAttemptCounts.clear();
     }
 
-    // Check whether an action has exceeded guidance attempt limit for a given page
-    bool ModelReusableAgent::isActionOverAttemptLimit(uintptr_t pageHash, uint64_t actionHash) const {
-        auto pit = this->_guidanceAttemptCounts.find(pageHash);
-        if (pit == this->_guidanceAttemptCounts.end()) return false;
-        auto ait = pit->second.find(actionHash);
-        if (ait == pit->second.end()) return false;
-        return ait->second >= this->_guidance_action_attempt_limit;
+    void ModelReusableAgent::processGuidedActionResult(const ActionPtr &action, uintptr_t targetPageHash, bool reached, const std::vector<uint64_t> &episodePath) {
+        if (action == nullptr) return;
+        uint64_t ah = static_cast<uint64_t>(action->hash());
+        if (reached) {
+            // success: reset consecutive fail for action and noProgress counter
+            this->_consecutiveFails[ah] = 0;
+            this->_noProgressCount = 0;
+            std::lock_guard<std::mutex> guard(this->_preconditionLock);
+            auto it = this->_preconditionPages.find(targetPageHash);
+            if (it == this->_preconditionPages.end()) return;
+            PreconditionInfo &info = it->second;
+            // increase reliability for matching slots
+            for (int t = 0; t < info.templateCount; ++t) {
+                for (int i = 0; i < 6; ++i) {
+                    if (info.templates[t].sequence[i] == ah) {
+                        info.templates[t].reliability[i] = std::min(info.templates[t].reliability[i] * 1.2, 1.0);
+                    }
+                }
+            }
+            // increase score
+            info.score = std::min(info.score * 1.5, 2.0);
+            // record new template if episodePath doesn't match any
+            bool matched = false;
+            if (!episodePath.empty()) {
+                for (int t = 0; t < info.templateCount; ++t) {
+                    bool eq = true;
+                    for (size_t i = 0; i < episodePath.size() && i < 6; ++i) {
+                        if (info.templates[t].sequence[i] != episodePath[i]) { eq = false; break; }
+                    }
+                    if (eq) { matched = true; break; }
+                }
+                if (!matched) {
+                    GuidancePathTemplate newT;
+                    for (size_t i = 0; i < episodePath.size() && i < 6; ++i) newT.sequence[i] = episodePath[i];
+                    for (size_t i = episodePath.size(); i < 6; ++i) newT.sequence[i] = 0;
+                    if (info.templateCount < 5) {
+                        for (int t = info.templateCount; t > 0; --t) info.templates[t] = info.templates[t-1];
+                        info.templates[0] = newT;
+                        info.templateCount++;
+                    } else {
+                        for (int t = 4; t > 0; --t) info.templates[t] = info.templates[t-1];
+                        info.templates[0] = newT;
+                    }
+                }
+            }
+        } else {
+            // failure
+            this->_consecutiveFails[ah]++;
+            this->_noProgressCount++;
+            // decrease reliability for templates containing this action
+            std::lock_guard<std::mutex> guard(this->_preconditionLock);
+            for (auto &kv : this->_preconditionPages) {
+                PreconditionInfo &info = kv.second;
+                for (int t = 0; t < info.templateCount; ++t) {
+                    for (int i = 0; i < 6; ++i) {
+                        if (info.templates[t].sequence[i] == ah) {
+                            info.templates[t].reliability[i] *= 0.5;
+                        }
+                    }
+                }
+            }
+            // global decay
+            for (auto &kv : this->_preconditionPages) {
+                PreconditionInfo &info = kv.second;
+                for (int t = 0; t < info.templateCount; ++t) for (int i = 0; i < 6; ++i) info.templates[t].reliability[i] *= 0.95;
+            }
+            // page-level stop if noProgressCount >=3
+            auto pit = this->_preconditionPages.find(targetPageHash);
+            if (pit != this->_preconditionPages.end()) {
+                PreconditionInfo &targetInfo = pit->second;
+                if (this->_noProgressCount >= 3) {
+                    targetInfo.score = std::max(targetInfo.score * 0.3, 0.1);
+                    this->_coveredPreconditionsThisEpisode.insert(targetPageHash);
+                }
+            }
+            // action-level blacklist if consecutiveFails >=3
+            if (this->_consecutiveFails[ah] >= 3) {
+                for (auto &kv : this->_preconditionPages) {
+                    PreconditionInfo &info = kv.second;
+                    for (int t = 0; t < info.templateCount; ++t) {
+                        for (int i = 0; i < 6; ++i) {
+                            if (info.templates[t].sequence[i] == ah) info.templates[t].reliability[i] = 0.0;
+                        }
+                    }
+                }
+            }
+        }
+        // summary log for diagnostics
+        BLOG("[GUIDE] exit processGuidedActionResult: action_hash=%llu targetPage=%lu reached=%d noProgressCount=%d consecutiveFails=%d",
+             static_cast<unsigned long long>(ah), static_cast<unsigned long>(targetPageHash), reached, this->_noProgressCount,
+             (this->_consecutiveFails.find(ah) != this->_consecutiveFails.end() ? this->_consecutiveFails[ah] : 0));
     }
-
-    // Sum up the total clicks (sum of counts to targets) for an action from the reuse model
-    int ModelReusableAgent::getTotalClicksForAction(uint64_t actionHash) const {
-        std::lock_guard<std::mutex> guard(this->_reuseModelLock);
-        (void)guard;
-         auto it = this->_reuseModel.find(actionHash);
-         if (it == this->_reuseModel.end()) return 0;
-         int total = 0;
-         for (const auto &entry : it->second) {
-             total += entry.second;
-         }
-         return total;
-     }
 
     void ModelReusableAgent::updateReuseModel() {
         if (this->_previousActions.empty())
@@ -878,6 +1133,93 @@ namespace fastbotx {
             }
             this->_reuseQValue[hash] = modelAction->getQValue();
         }
+    }
+
+
+    void ModelReusableAgent::processGuidedActionResultByHash(uint64_t actionHash, uintptr_t targetPageHash, bool reached) {
+        // If we can find an ActionPtr, delegate to the main handler which also handles template insertion logic.
+        ActionPtr found = nullptr;
+        for (auto &a : this->_previousActions) { if (a && static_cast<uint64_t>(a->hash()) == actionHash) { found = a; break; } }
+        if (!found && this->_newAction && static_cast<uint64_t>(this->_newAction->hash()) == actionHash) found = this->_newAction;
+        if (found) {
+            std::vector<uint64_t> emptyPath;
+            this->processGuidedActionResult(found, targetPageHash, reached, emptyPath);
+            // cleanup pending entries
+            this->_pendingGuidedTargets.erase(actionHash);
+            this->_pendingGuidedAges.erase(actionHash);
+            return;
+        }
+
+        // Fallback: no ActionPtr available — apply updates directly using actionHash.
+        if (reached) {
+            this->_consecutiveFails[actionHash] = 0;
+            this->_noProgressCount = 0;
+            std::lock_guard<std::mutex> guard(this->_preconditionLock);
+            auto it = this->_preconditionPages.find(targetPageHash);
+            if (it == this->_preconditionPages.end()) {
+                // nothing to update
+                this->_pendingGuidedTargets.erase(actionHash);
+                this->_pendingGuidedAges.erase(actionHash);
+                return;
+            }
+            PreconditionInfo &info = it->second;
+            for (int t = 0; t < info.templateCount; ++t) {
+                for (int i = 0; i < 6; ++i) {
+                    if (info.templates[t].sequence[i] == actionHash) {
+                        info.templates[t].reliability[i] = std::min(info.templates[t].reliability[i] * 1.2, 1.0);
+                    }
+                }
+            }
+            info.score = std::min(info.score * 1.5, 2.0);
+            // cleanup pending
+            this->_pendingGuidedTargets.erase(actionHash);
+            this->_pendingGuidedAges.erase(actionHash);
+            return;
+        }
+
+        // Failure case when no ActionPtr: apply penalties
+        this->_consecutiveFails[actionHash]++;
+        this->_noProgressCount++;
+        {
+            std::lock_guard<std::mutex> guard(this->_preconditionLock);
+            for (auto &kv : this->_preconditionPages) {
+                PreconditionInfo &info = kv.second;
+                for (int t = 0; t < info.templateCount; ++t) for (int i = 0; i < 6; ++i) {
+                    if (info.templates[t].sequence[i] == actionHash) info.templates[t].reliability[i] *= 0.5;
+                }
+            }
+            // global decay
+            for (auto &kv : this->_preconditionPages) {
+                PreconditionInfo &info = kv.second;
+                for (int t = 0; t < info.templateCount; ++t) for (int i = 0; i < 6; ++i) info.templates[t].reliability[i] *= 0.95;
+            }
+            // page-level stop if noProgressCount >=3
+            auto pit = this->_preconditionPages.find(targetPageHash);
+            if (pit != this->_preconditionPages.end()) {
+                PreconditionInfo &targetInfo = pit->second;
+                if (this->_noProgressCount >= 3) {
+                    targetInfo.score = std::max(targetInfo.score * 0.3, 0.1);
+                    this->_coveredPreconditionsThisEpisode.insert(targetPageHash);
+                }
+            }
+            // action-level blacklist if consecutiveFails >=3
+            if (this->_consecutiveFails[actionHash] >= 3) {
+                for (auto &kv : this->_preconditionPages) {
+                    PreconditionInfo &info = kv.second;
+                    for (int t = 0; t < info.templateCount; ++t) {
+                        for (int i = 0; i < 6; ++i) {
+                            if (info.templates[t].sequence[i] == actionHash) info.templates[t].reliability[i] = 0.0;
+                        }
+                    }
+                }
+            }
+        }
+        // cleanup pending
+        this->_pendingGuidedTargets.erase(actionHash);
+        this->_pendingGuidedAges.erase(actionHash);
+        BLOG("[GUIDE] exit processGuidedActionResultByHash: action_hash=%llu targetPage=%lu reached=%d noProgressCount=%d consecutiveFails=%d",
+             static_cast<unsigned long long>(actionHash), static_cast<unsigned long>(targetPageHash), reached, this->_noProgressCount,
+             (this->_consecutiveFails.find(actionHash) != this->_consecutiveFails.end() ? this->_consecutiveFails[actionHash] : 0));
     }
 
 
