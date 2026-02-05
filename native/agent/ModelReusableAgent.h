@@ -26,13 +26,17 @@ namespace fastbotx {
     typedef std::map<uint64_t, ReuseEntryM> ReuseEntryIntMap;
     typedef std::map<uint64_t, double> ReuseEntryQValueMap;
 
-    // Path template for a precondition page: sequence of up to 6 action hashes (start->end) and per-step reliability
+    // Path template for a precondition page: sequence of up to 5 action hashes and per-step reliability
+    // A template may have fewer than 5 actions (e.g., 2-3 actions is normal)
     // Renamed to GuidancePathTemplate to avoid collision with FlatBuffers-generated PathTemplate
+    static constexpr int MAX_TEMPLATE_SEQUENCE_LEN = 5;
+
     struct GuidancePathTemplate {
-        uint64_t sequence[6];
-        double reliability[6];
-        GuidancePathTemplate() {
-            for (int i = 0; i < 6; ++i) {
+        uint64_t sequence[MAX_TEMPLATE_SEQUENCE_LEN];
+        double reliability[MAX_TEMPLATE_SEQUENCE_LEN];
+        int length = 0; // actual number of actions in this template (<=5)
+        GuidancePathTemplate() : length(0) {
+            for (int i = 0; i < MAX_TEMPLATE_SEQUENCE_LEN; ++i) {
                 sequence[i] = 0;
                 reliability[i] = 0.5; // default reliability
             }
@@ -117,6 +121,9 @@ namespace fastbotx {
         // Guidance: select an action guided by precondition action-success probabilities
         ActionPtr selectGuidedActionForPrecondition();
 
+        // Check pending guide result from previous step and apply reward/penalty
+        void checkPendingGuideResult();
+
         // New helper: compute the guidance probability P(A) for action A to reach a precondition page
         // Formula: P(A) = (count(A->Pre) / total_clicks(A)) * scorePre * Rmulti(A)
         double computePreconditionActionProbability(uintptr_t pageHash, const ActionPtr &action) const;
@@ -180,14 +187,43 @@ namespace fastbotx {
         std::unordered_map<uintptr_t, std::unordered_map<uint64_t, int>> _guidanceAttemptCounts;
 
         // Runtime-only state for steering the guided algorithm (non-persisted)
-        std::unordered_map<uint64_t, int> _consecutiveFails; // actionHash -> consecutive fails this episode
+        std::unordered_map<uintptr_t, std::unordered_map<uint64_t, int>> _consecutiveFails; // pageHash -> actionHash -> consecutive fails
         std::unordered_map<uintptr_t, int> _lastPosition; // pageHash -> last chosen position in template
-        int _noProgressCount = 0; // consecutive no-progress attempts in this episode
+        std::unordered_map<uintptr_t, int> _noProgressCount; // pageHash -> consecutive no-progress attempts for this page
         // Pending guided action targets: actionHash -> targetPageHash; used to evaluate reach/fail when next state observed
         std::unordered_map<uint64_t, uintptr_t> _pendingGuidedTargets;
         // Age counters for pending guided targets; incremented each select call; if age > _pending_max_age -> treat as failure
         std::unordered_map<uint64_t, int> _pendingGuidedAges;
         int _pending_max_age = 2; // default threshold (steps) before aging a pending guided action to failure
+
+        // Guided action tracking with delayed check mechanism:
+        // When a guide action is selected, we record it as "pending".
+        // In the NEXT updateStrategy call, we check if addCurrentPageAsPrecondition was called in between.
+        //
+        // Timeline:
+        // Step N: selectGuidedAction -> set _pendingGuideCheck = {hash, targetPage}
+        //         return action to Java
+        // [action executed, if precondition reached: addCurrentPageAsPrecondition called, sets _preconditionReachedSinceLastGuide = true]
+        // Step N+1: updateStrategy -> check _pendingGuideCheck, apply reward or penalty based on _preconditionReachedSinceLastGuide
+        //           selectGuidedAction (if applicable) -> set new _pendingGuideCheck
+
+        bool _hasPendingGuideCheck = false;
+        uint64_t _pendingGuideActionHash = 0;
+        uintptr_t _pendingGuideTargetPage = 0;
+        // Flag: set to true by addCurrentPageAsPrecondition, checked and reset by updateStrategy
+        bool _preconditionReachedSinceLastGuide = false;
+
+        // Limits to prevent over-exploitation of a single template/page
+        static constexpr int MAX_TEMPLATE_REWARDS_PER_EPISODE = 10;   // max times a template can be rewarded in one episode
+        static constexpr int MAX_TEMPLATE_SELECTIONS_PER_EPISODE = 5; // max times a template can be selected in one episode
+        static constexpr int MAX_PAGE_SELECTIONS_PER_EPISODE = 10;    // max times a page can be targeted in one episode
+
+        // Per-template reward counts: pageHash -> templateIndex -> reward count
+        std::unordered_map<uintptr_t, std::unordered_map<int, int>> _templateRewardCounts;
+        // Per-template selection counts: pageHash -> templateIndex -> selection count
+        std::unordered_map<uintptr_t, std::unordered_map<int, int>> _templateSelectionCounts;
+        // Per-page selection counts: pageHash -> selection count
+        std::unordered_map<uintptr_t, int> _pageSelectionCounts;
 
         // Internal helper: process feedback when only action hash is available
         void processGuidedActionResultByHash(uint64_t actionHash, uintptr_t targetPageHash, bool reached);
