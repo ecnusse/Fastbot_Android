@@ -1,6 +1,7 @@
 package com.android.commands.monkey.utils;
 
 import java.io.IOException;
+import java.util.concurrent.TimeUnit;
 
 import okhttp3.HttpUrl;
 import okhttp3.MediaType;
@@ -36,6 +37,7 @@ public class OkHttpClient {
 
         client = new okhttp3.OkHttpClient.Builder()
                 .addInterceptor(loggingInterceptor)
+                .callTimeout(5, TimeUnit.SECONDS)
                 .build();
         connect();
     }

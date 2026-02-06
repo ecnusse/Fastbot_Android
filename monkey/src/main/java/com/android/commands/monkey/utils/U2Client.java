@@ -4,6 +4,10 @@ import com.google.gson.Gson;
 import java.io.IOException;
 import java.util.Arrays;
 
+import fi.iki.elonen.NanoHTTPD;
+import okhttp3.MediaType;
+import okhttp3.Protocol;
+import okhttp3.ResponseBody;
 
 
 public class U2Client extends ScriptDriverClient {
@@ -28,7 +32,7 @@ public class U2Client extends ScriptDriverClient {
                 Arrays.asList(false, 50)
         );
 
-        int maxRetries = 3;
+        int maxRetries = 1;
         IOException lastEx = null;
         for (int i = 0; i < maxRetries; i++) {
             try {
@@ -40,7 +44,9 @@ public class U2Client extends ScriptDriverClient {
                 }
             }
         }
-        throw new RuntimeException("All retries failed", lastEx);
+        Logger.println("Error when dumping hierarchy: " + lastEx.getMessage());
+        Logger.println("Return null");
+        return null;
     }
 
     public okhttp3.Response takeScreenshot() {

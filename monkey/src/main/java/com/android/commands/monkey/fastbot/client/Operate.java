@@ -38,7 +38,7 @@ public class Operate extends GsonIface {
     public int throttle;
     public String target;
     public String jAction;
-    public String wiget;
+    public String widget;
 
     public static Operate fromJson(String jsonStr) {
         return gson.fromJson(jsonStr, Operate.class);

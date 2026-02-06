@@ -394,7 +394,6 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
      * @return the first event in the queue
      */
     public MonkeyEvent getNextEvent() {
-        checkAppActivity();
         if (checkMonkeyStepDone()){
             if (shouldProfile()){
                 Logger.println("[MonkeySourceApeU2] Profiling coverage...");
@@ -406,6 +405,7 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
             }
         }
         if (!hasEvent()) {
+            checkAppActivity();
             try {
                 if (mVerbose > 3){
                     Logger.println("[MonkeySourceApeU2] wait semaphore: stepMonkey");
@@ -756,7 +756,7 @@ public class MonkeySourceApeU2 implements MonkeyEventSource {
                 Operate operate = AiClient.getAction(topActivityName.getClassName(), stringOfGuiTree);
 
                 // record the monkeyStep
-                server.recordMonkeyStep(operate);
+                server.recordMonkeyStep(operate, topActivityName.getClassName());
 
                 operate.throttle += (int) this.mThrottle;
                 // For user specified actions, during executing, fuzzing is not allowed.
