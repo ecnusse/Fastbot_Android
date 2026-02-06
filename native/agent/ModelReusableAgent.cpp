@@ -891,9 +891,9 @@ namespace fastbotx {
                     info.templateCount = 0; // initialize, will be set by loadTemplatesFromFBPage
                     // initialize template slots
                     for (int t = 0; t < 5; ++t) {
-                        for (int j = 0; j < 6; ++j) {
+                        for (int j = 0; j < MAX_TEMPLATE_SEQUENCE_LEN; ++j) {
                             info.templates[t].sequence[j] = 0;
-                            info.templates[t].reliability[j] = 0.0;
+                            info.templates[t].reliability[j] = 0.5;
                         }
                     }
                     // load action_counts if present
@@ -913,17 +913,16 @@ namespace fastbotx {
                     BLOG("[GUIDE] Loaded page %lu: templateCount=%d", static_cast<unsigned long>(pageName), info.templateCount);
                     // Log each template's sequence
                     for (int t = 0; t < info.templateCount; ++t) {
-                        BLOG("[GUIDE] Page %lu template[%d]: seq=[%llu,%llu,%llu,%llu,%llu,%llu] rel=[%.2f,%.2f,%.2f,%.2f,%.2f,%.2f]",
+                        BLOG("[GUIDE] Page %lu template[%d]: seq=[%llu,%llu,%llu,%llu,%llu] rel=[%.2f,%.2f,%.2f,%.2f,%.2f]",
                              static_cast<unsigned long>(pageName), t,
                              static_cast<unsigned long long>(info.templates[t].sequence[0]),
                              static_cast<unsigned long long>(info.templates[t].sequence[1]),
                              static_cast<unsigned long long>(info.templates[t].sequence[2]),
                              static_cast<unsigned long long>(info.templates[t].sequence[3]),
                              static_cast<unsigned long long>(info.templates[t].sequence[4]),
-                             static_cast<unsigned long long>(info.templates[t].sequence[5]),
                              info.templates[t].reliability[0], info.templates[t].reliability[1],
                              info.templates[t].reliability[2], info.templates[t].reliability[3],
-                             info.templates[t].reliability[4], info.templates[t].reliability[5]);
+                             info.templates[t].reliability[4]);
                     }
                     this->_preconditionPages[pageName] = info;
                 }
@@ -1011,7 +1010,7 @@ namespace fastbotx {
                         const fastbotx::GuidancePathTemplate &pt = entry.second.templates[t];
                         std::vector<uint64_t> seqVec;
                         std::vector<double> relVec;
-                        for (int i = 0; i < 6; ++i) {
+                        for (int i = 0; i < MAX_TEMPLATE_SEQUENCE_LEN; ++i) {
                             seqVec.push_back(pt.sequence[i]);
                             relVec.push_back(pt.reliability[i]);
                         }
@@ -1030,14 +1029,13 @@ namespace fastbotx {
                      entry.second.actionList.size(), entry.second.templateCount);
                 // Log each template
                 for (int t = 0; t < entry.second.templateCount; ++t) {
-                    BLOG("[GUIDE] Page %lu template[%d]: seq=[%llu,%llu,%llu,%llu,%llu,%llu]",
+                    BLOG("[GUIDE] Page %lu template[%d]: seq=[%llu,%llu,%llu,%llu,%llu]",
                          static_cast<unsigned long>(entry.first), t,
                          static_cast<unsigned long long>(entry.second.templates[t].sequence[0]),
                          static_cast<unsigned long long>(entry.second.templates[t].sequence[1]),
                          static_cast<unsigned long long>(entry.second.templates[t].sequence[2]),
                          static_cast<unsigned long long>(entry.second.templates[t].sequence[3]),
-                         static_cast<unsigned long long>(entry.second.templates[t].sequence[4]),
-                         static_cast<unsigned long long>(entry.second.templates[t].sequence[5]));
+                         static_cast<unsigned long long>(entry.second.templates[t].sequence[4]));
                 }
                 preconditionPagesVector.push_back(pageOffset);
             }
@@ -1156,8 +1154,15 @@ namespace fastbotx {
                      static_cast<unsigned long>(guidedTargetPage),
                      static_cast<unsigned long long>(this->_pendingGuideActionHash));
             }
-            // NOTE: Don't clear _hasPendingGuideCheck here - it will be cleared in updateStrategy
-            // after the reward/penalty logic is processed
+
+            // Mark the guided target page as covered this episode (whether we reached it or not)
+            // This prevents repeated guidance attempts to the same target in this episode
+            if (this->_coveredPreconditionsThisEpisode.find(guidedTargetPage) == this->_coveredPreconditionsThisEpisode.end()) {
+                this->_coveredPreconditionsThisEpisode.insert(guidedTargetPage);
+                BLOG("[GUIDE] Marked guided target page %lu as covered (guide attempted)",
+                     static_cast<unsigned long>(guidedTargetPage));
+            }
+            // NOTE: Don't clear _hasPendingGuideCheck here - it will be cleared in checkPendingGuideResult
         }
 
         // --- Normal logic: add/update precondition page ---
@@ -1169,9 +1174,9 @@ namespace fastbotx {
             // initialize template slots
             for (int t = 0; t < 5; ++t) {
                 newInfo.templates[t].length = 0;
-                for (int i = 0; i < MAX_TEMPLATE_SEQUENCE_LEN; ++i) {
-                    newInfo.templates[t].sequence[i] = 0;
-                    newInfo.templates[t].reliability[i] = 0.5;
+                for (int j = 0; j < MAX_TEMPLATE_SEQUENCE_LEN; ++j) {
+                    newInfo.templates[t].sequence[j] = 0;
+                    newInfo.templates[t].reliability[j] = 0.5;
                 }
             }
             this->_preconditionPages[currentPage] = newInfo;
