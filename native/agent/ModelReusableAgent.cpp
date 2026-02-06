@@ -871,93 +871,43 @@ namespace fastbotx {
          }
         BLOG("loaded model contains actions: %zu", this->_reuseModel.size());
 
-        // read precondition pages (score and action_counts persisted in flatbuffer schema)
+        // [DATA SEPARATION] Do NOT read precondition_pages from .fbm; they are stored only in companion .precond file
         {
             std::lock_guard<std::mutex> guard(this->_preconditionLock);
             (void)guard;
             this->_preconditionPages.clear();
-            BLOG("[GUIDE] Loading precondition pages from flatbuffer...");
-            if (reuseFBModel->precondition_pages() != nullptr) {
-                auto preconditionPages = reuseFBModel->precondition_pages();
-                BLOG("[GUIDE] Found %d precondition pages in flatbuffer", preconditionPages->size());
-                for (int i = 0; i < preconditionPages->size(); ++i) {
-                    auto page = preconditionPages->Get(i);
-                    uintptr_t pageName = (uintptr_t) page->hashcode();
-                    // NOTE: The persisted schema contains score and action_counts for precondition pages.
-                    double persistedScore = page->score();
-                    PreconditionInfo info;
-                    // use persisted score if > 0, otherwise default to 1.0
-                    info.score = (persistedScore > 0.0) ? persistedScore : 1.0;
-                    info.templateCount = 0; // initialize, will be set by loadTemplatesFromFBPage
-                    // initialize template slots
-                    for (int t = 0; t < 5; ++t) {
-                        for (int j = 0; j < MAX_TEMPLATE_SEQUENCE_LEN; ++j) {
-                            info.templates[t].sequence[j] = 0;
-                            info.templates[t].reliability[j] = 0.5;
-                        }
-                    }
-                    // load action_counts if present
-                    if (page->action_counts() != nullptr) {
-                        auto actionCountsVec = page->action_counts();
-                        for (int j = 0; j < actionCountsVec->size(); ++j) {
-                            auto ac = actionCountsVec->Get(j);
-                            uint64_t ah = ac->action();
-                            int times = ac->times();
-                            info.actionList[ah] = times;
-                        }
-                        BLOG("[GUIDE] Loaded page %lu: score=%f, actionList.size=%zu",
-                             static_cast<unsigned long>(pageName), info.score, info.actionList.size());
-                    }
-                    // load templates from flatbuffer page when schema provides them (compatible)
-                    loadTemplatesFromFBPage(page, info);
-                    BLOG("[GUIDE] Loaded page %lu: templateCount=%d", static_cast<unsigned long>(pageName), info.templateCount);
-                    // Log each template's sequence
-                    for (int t = 0; t < info.templateCount; ++t) {
-                        BLOG("[GUIDE] Page %lu template[%d]: seq=[%llu,%llu,%llu,%llu,%llu] rel=[%.2f,%.2f,%.2f,%.2f,%.2f]",
-                             static_cast<unsigned long>(pageName), t,
-                             static_cast<unsigned long long>(info.templates[t].sequence[0]),
-                             static_cast<unsigned long long>(info.templates[t].sequence[1]),
-                             static_cast<unsigned long long>(info.templates[t].sequence[2]),
-                             static_cast<unsigned long long>(info.templates[t].sequence[3]),
-                             static_cast<unsigned long long>(info.templates[t].sequence[4]),
-                             info.templates[t].reliability[0], info.templates[t].reliability[1],
-                             info.templates[t].reliability[2], info.templates[t].reliability[3],
-                             info.templates[t].reliability[4]);
-                    }
-                    this->_preconditionPages[pageName] = info;
-                }
-                BLOG("[GUIDE] Loaded %zu precondition pages from flatbuffer", this->_preconditionPages.size());
-            } else {
-                BLOG("[GUIDE] No precondition pages found in flatbuffer model.");
-            }
+            BLOG("[GUIDE] Precondition pages will be loaded from separate .precond file only (skipping .fbm)");
         }
-        // --- Load companion precondition templates file if exists ---
+
+        // --- Load ALL precondition data from companion .precond file ---
         {
             std::string precondFilePath = modelFilePath + ".precond";
-            BLOG("[GUIDE] Trying to load companion file: %s", precondFilePath.c_str());
+            BLOG("[GUIDE] Loading precondition pages from companion file: %s", precondFilePath.c_str());
             std::unordered_map<uintptr_t, PreconditionInfo> filePages;
             if (loadPreconditionTemplatesFromFile(precondFilePath, filePages)) {
-                BLOG("[GUIDE] Loaded %zu pages from companion file", filePages.size());
+                BLOG("[GUIDE] Successfully loaded %zu pages from companion file", filePages.size());
                 std::lock_guard<std::mutex> guard(this->_preconditionLock);
                 for (const auto &kv : filePages) {
-                    auto it = this->_preconditionPages.find(kv.first);
-                    if (it != this->_preconditionPages.end()) {
-                        // overwrite templates, templateCount and score from file
-                        it->second.templateCount = kv.second.templateCount;
-                        it->second.score = kv.second.score;
-                        for (int t = 0; t < 5; ++t) it->second.templates[t] = kv.second.templates[t];
-                        BLOG("[GUIDE] Merged page %lu: templateCount=%d, score=%f from companion file",
-                             static_cast<unsigned long>(kv.first), kv.second.templateCount, kv.second.score);
-                    } else {
-                        // insert new page from companion file
-                        this->_preconditionPages[kv.first] = kv.second;
-                        BLOG("[GUIDE] Inserted new page %lu: templateCount=%d, score=%f from companion file",
-                             static_cast<unsigned long>(kv.first), kv.second.templateCount, kv.second.score);
+                    this->_preconditionPages[kv.first] = kv.second;
+                    BLOG("[GUIDE] Loaded page %lu: templateCount=%d, score=%f",
+                         static_cast<unsigned long>(kv.first), kv.second.templateCount, kv.second.score);
+                    // Log each template
+                    for (int t = 0; t < kv.second.templateCount; ++t) {
+                        BLOG("[GUIDE] Page %lu template[%d]: seq=[%llu,%llu,%llu,%llu,%llu] rel=[%.2f,%.2f,%.2f,%.2f,%.2f]",
+                             static_cast<unsigned long>(kv.first), t,
+                             static_cast<unsigned long long>(kv.second.templates[t].sequence[0]),
+                             static_cast<unsigned long long>(kv.second.templates[t].sequence[1]),
+                             static_cast<unsigned long long>(kv.second.templates[t].sequence[2]),
+                             static_cast<unsigned long long>(kv.second.templates[t].sequence[3]),
+                             static_cast<unsigned long long>(kv.second.templates[t].sequence[4]),
+                             kv.second.templates[t].reliability[0], kv.second.templates[t].reliability[1],
+                             kv.second.templates[t].reliability[2], kv.second.templates[t].reliability[3],
+                             kv.second.templates[t].reliability[4]);
                     }
                 }
-                BLOG("[GUIDE] After merge, total precondition pages: %zu", this->_preconditionPages.size());
+                BLOG("[GUIDE] Total precondition pages loaded: %zu", this->_preconditionPages.size());
             } else {
-                BLOG("[GUIDE] Companion file not found or failed to load: %s", precondFilePath.c_str());
+                BLOG("[GUIDE] Companion file not found or failed to load: %s (this is normal for first run)", precondFilePath.c_str());
             }
         }
 
@@ -981,70 +931,26 @@ namespace fastbotx {
                     auto sentryActT = CreateActivityTimes(builder, builder.CreateString(*activityCountEntry.first), activityCountEntry.second);
                     activityCountEntryVector.push_back(sentryActT);
                 }
-                auto savedActivityCountEntries = CreateReuseEntry(builder, actionHash, builder.CreateVector(activityCountEntryVector.data(), activityCountEntryVector.size()));
-                actionActivityVector.push_back(savedActivityCountEntries);
+                if (!activityCountEntryVector.empty()) {
+                    auto savedActivityCountEntries = CreateReuseEntry(builder, actionHash, builder.CreateVector(activityCountEntryVector.data(), activityCountEntryVector.size()));
+                    actionActivityVector.push_back(savedActivityCountEntries);
+                }
             }
         }
 
-        // save precondition pages (persist score and action_counts)
-        std::vector<flatbuffers::Offset<fastbotx::PreconditionPage>> preconditionPagesVector;
-        {
-            std::lock_guard<std::mutex> guard(this->_preconditionLock);
-            (void)guard;
-            BLOG("[GUIDE] Saving %zu precondition pages...", this->_preconditionPages.size());
-            for (const auto &entry : this->_preconditionPages) {
-                // persist score along with visited flag
-                std::vector<flatbuffers::Offset<fastbotx::ActionCounts>> actionCountVec;
-                for (const auto &ac : entry.second.actionList) {
-                    auto acOffset = CreateActionCounts(builder, ac.first, ac.second);
-                    actionCountVec.push_back(acOffset);
-                }
-                flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<fastbotx::ActionCounts>>> actionCountsOffset = 0;
-                if (!actionCountVec.empty()) actionCountsOffset = builder.CreateVector(actionCountVec.data(), actionCountVec.size());
-                // Create PreconditionPage with (hashcode, score, action_counts) according to updated schema
-                // prepare templates if any
-                flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<fastbotx::PathTemplate>>> templatesOffset = 0;
-                if (entry.second.templateCount > 0) {
-                    std::vector<flatbuffers::Offset<fastbotx::PathTemplate>> fbTemplates;
-                    for (int t = 0; t < entry.second.templateCount && t < 5; ++t) {
-                        const fastbotx::GuidancePathTemplate &pt = entry.second.templates[t];
-                        std::vector<uint64_t> seqVec;
-                        std::vector<double> relVec;
-                        for (int i = 0; i < MAX_TEMPLATE_SEQUENCE_LEN; ++i) {
-                            seqVec.push_back(pt.sequence[i]);
-                            relVec.push_back(pt.reliability[i]);
-                        }
-                        auto seqOff = builder.CreateVector<uint64_t>(seqVec);
-                        auto relOff = builder.CreateVector<double>(relVec);
-                        auto fbPt = fastbotx::CreatePathTemplate(builder, seqOff, relOff);
-                        fbTemplates.push_back(fbPt);
-                    }
-                    templatesOffset = builder.CreateVector(fbTemplates.data(), fbTemplates.size());
-                }
-                auto pageOffset = CreatePreconditionPage(builder, entry.first, entry.second.score, actionCountsOffset, templatesOffset);
+        // [DATA SEPARATION] Only save reuse model to .fbm, precondition_pages are saved to companion .precond file
+        // Create empty/null preconditionPagesOffset to avoid writing precondition_pages to .fbm
+        flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<fastbotx::PreconditionPage>>> preconditionPagesOffset = 0;
+        BLOG("[GUIDE] Precondition pages will be saved to separate .precond file only (not in .fbm)");
 
-                // Log details for each page
-                BLOG("[GUIDE] Saving page %lu: score=%f, actionList.size=%zu, templateCount=%d",
-                     static_cast<unsigned long>(entry.first), entry.second.score,
-                     entry.second.actionList.size(), entry.second.templateCount);
-                // Log each template
-                for (int t = 0; t < entry.second.templateCount; ++t) {
-                    BLOG("[GUIDE] Page %lu template[%d]: seq=[%llu,%llu,%llu,%llu,%llu]",
-                         static_cast<unsigned long>(entry.first), t,
-                         static_cast<unsigned long long>(entry.second.templates[t].sequence[0]),
-                         static_cast<unsigned long long>(entry.second.templates[t].sequence[1]),
-                         static_cast<unsigned long long>(entry.second.templates[t].sequence[2]),
-                         static_cast<unsigned long long>(entry.second.templates[t].sequence[3]),
-                         static_cast<unsigned long long>(entry.second.templates[t].sequence[4]));
-                }
-                preconditionPagesVector.push_back(pageOffset);
-            }
+        flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<fastbotx::ReuseEntry>>> actionActivityOffset = 0;
+        if (!actionActivityVector.empty()) {
+            actionActivityOffset = builder.CreateVector(actionActivityVector.data(), actionActivityVector.size());
         }
-        auto preconditionPagesOffset = builder.CreateVector(preconditionPagesVector.data(), preconditionPagesVector.size());
 
         auto savedReuseModelOffset = CreateReuseModel(
                 builder,
-                builder.CreateVector(actionActivityVector.data(), actionActivityVector.size()),
+                actionActivityOffset,
                 preconditionPagesOffset
         );
         builder.Finish(savedReuseModelOffset);
@@ -1053,18 +959,20 @@ namespace fastbotx {
         if (outputFilePath.empty()) {
             outputFilePath = this->_defaultModelSavePath;
         }
-        BLOG("save model to path: %s", outputFilePath.c_str());
-        std::ofstream outputFile(outputFilePath);
+        BLOG("save model to path: %s (reuse model only, no precondition pages)", outputFilePath.c_str());
+        std::ofstream outputFile(outputFilePath, std::ios::binary);
         outputFile.write((char *) builder.GetBufferPointer(), static_cast<int>(builder.GetSize()));
         outputFile.close();
+        BLOG("[GUIDE] Saved .fbm file: %zu actions in reuse model", this->_reuseModel.size());
 
-        // --- Save companion precondition templates to file ---
+        // --- Save all precondition pages to companion .precond file (complete separation) ---
         {
             std::string precondFilePath = outputFilePath + ".precond";
             std::lock_guard<std::mutex> guard(this->_preconditionLock);
+            BLOG("[GUIDE] Saving %zu precondition pages to companion file: %s", this->_preconditionPages.size(), precondFilePath.c_str());
             bool saved = savePreconditionTemplatesToFile(precondFilePath, this->_preconditionPages);
             if (saved) {
-                BLOG("[GUIDE] Saved companion file: %s (%zu pages)", precondFilePath.c_str(), this->_preconditionPages.size());
+                BLOG("[GUIDE] Successfully saved companion file: %s (%zu pages)", precondFilePath.c_str(), this->_preconditionPages.size());
             } else {
                 BLOG("[GUIDE] Failed to save companion file: %s", precondFilePath.c_str());
             }
