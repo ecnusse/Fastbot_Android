@@ -30,7 +30,6 @@ configurations {
 }
 
 android {
-    namespace 'com.bytedance.fastbot'
     compileSdkVersion 32
 
     defaultConfig {
@@ -54,7 +53,7 @@ android {
         }
     }
 
-    lint {
+    lintOptions {
         abortOnError false
     }
 
