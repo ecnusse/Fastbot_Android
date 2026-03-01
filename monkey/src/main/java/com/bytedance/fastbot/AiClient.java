@@ -164,4 +164,15 @@ public class AiClient {
         return Operate.fromJson(operateStr);
     }
 
+    public static native void addCurrentPageAsPrecondition(String xml);
+
+    // Native sync method: returns 0 on success, non-zero on error
+    private static native int addCurrentPageAsPreconditionSync(String xml);
+
+    // Java wrapper that returns boolean for success
+    public static boolean addCurrentPageAsPreconditionSyncOk(String xml) {
+        int status = addCurrentPageAsPreconditionSync(xml);
+        return status == 0;
+    }
+
 }

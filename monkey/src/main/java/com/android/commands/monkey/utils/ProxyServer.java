@@ -27,7 +27,6 @@ import fi.iki.elonen.NanoHTTPD;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-
 public class ProxyServer extends NanoHTTPD {
 
     private final OkHttpClient client;
@@ -110,6 +109,10 @@ public class ProxyServer extends NanoHTTPD {
                 "text/plain",
                 "Monkey Stopped"
             );
+        }
+
+        if (session.getMethod() == Method.GET && uri.equals("/propertyFirstSatisfied")) {
+            return handlePropertyFirstSatisfied();
         }
 
         // parse the request body data
@@ -254,6 +257,9 @@ public class ProxyServer extends NanoHTTPD {
         Logger.println("[Proxy Server] Forwarding");
         return forward(uri, method, requestBody);
     }
+
+
+
 
     public File getDeviceOutputDir(){
         return outputDir;
@@ -561,5 +567,51 @@ public class ProxyServer extends NanoHTTPD {
             screenshot_file = saveScreenshot(screenshotResponse);
         }
         recordLog(action, screenshot_file);
+    }
+
+    private Response handlePropertyFirstSatisfied() {
+        // Use a synchronous call with timeout: call sendCurrentPageAsPrecondition and wait for up to TIMEOUT_MS.
+        final int TIMEOUT_MS = 8000; // 8 seconds timeout, tunable
+        if (this.eventSource == null) {
+            Logger.errorPrintln("[ProxyServer] eventSource is null, cannot send precondition");
+            return newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "{\"status\":\"error\",\"message\":\"eventSource not available\"}");
+        }
+
+        java.util.concurrent.ExecutorService ex = java.util.concurrent.Executors.newSingleThreadExecutor();
+        java.util.concurrent.Future<Boolean> f = ex.submit(new java.util.concurrent.Callable<Boolean>() {
+            @Override
+            public Boolean call() throws Exception {
+                try {
+                    return ProxyServer.this.eventSource.sendCurrentPageAsPrecondition();
+                } catch (Throwable t) {
+                    Logger.errorPrintln("[ProxyServer] sendCurrentPageAsPrecondition threw: " + t.getMessage());
+                    return false;
+                }
+            }
+        });
+
+        boolean success = false;
+        try {
+            success = f.get(TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
+        } catch (java.util.concurrent.TimeoutException te) {
+            f.cancel(true);
+            Logger.errorPrintln("[ProxyServer] sendCurrentPageAsPrecondition timed out after " + TIMEOUT_MS + "ms");
+            ex.shutdownNow();
+            return newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "{\"status\":\"error\",\"message\":\"timeout\"}");
+        } catch (Exception e) {
+            Logger.errorPrintln("[ProxyServer] Exception when waiting for sendCurrentPageAsPrecondition: " + e.getMessage());
+            ex.shutdownNow();
+            return newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "{\"status\":\"error\",\"message\":\"exception\"}");
+        } finally {
+            ex.shutdownNow();
+        }
+
+        if (success) {
+            Logger.println("[ProxyServer] sendCurrentPageAsPrecondition succeeded");
+            return newFixedLengthResponse(Response.Status.OK, "text/plain", "{\"status\":\"ok\"}");
+        } else {
+            Logger.errorPrintln("[ProxyServer] sendCurrentPageAsPrecondition reported failure");
+            return newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "{\"status\":\"error\",\"message\":\"native failed\"}");
+        }
     }
 }

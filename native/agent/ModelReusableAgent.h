@@ -12,6 +12,9 @@
 #include "Action.h"
 #include <vector>
 #include <map>
+#include <unordered_map>
+#include <string>
+#include <unordered_set>
 
 namespace fastbotx {
 
@@ -23,10 +26,43 @@ namespace fastbotx {
     typedef std::map<uint64_t, ReuseEntryM> ReuseEntryIntMap;
     typedef std::map<uint64_t, double> ReuseEntryQValueMap;
 
+    // Path template for a precondition page: sequence of up to 5 action hashes and per-step reliability
+    // A template may have fewer than 5 actions (e.g., 2-3 actions is normal)
+    // Renamed to GuidancePathTemplate to avoid collision with FlatBuffers-generated PathTemplate
+    static constexpr int MAX_TEMPLATE_SEQUENCE_LEN = 5;
+
+    struct GuidancePathTemplate {
+        uint64_t sequence[MAX_TEMPLATE_SEQUENCE_LEN];
+        double reliability[MAX_TEMPLATE_SEQUENCE_LEN];
+        int length = 0; // actual number of actions in this template (<=5)
+        GuidancePathTemplate() : length(0) {
+            for (int i = 0; i < MAX_TEMPLATE_SEQUENCE_LEN; ++i) {
+                sequence[i] = 0;
+                reliability[i] = 0.5; // default reliability
+            }
+        }
+    };
+
+    struct PreconditionInfo {
+        double score;
+        // List mapping action hash -> successful reach count for this precondition page
+        std::unordered_map<uint64_t, int> actionList;
+        GuidancePathTemplate templates[5];
+        int templateCount = 0; // actual number of templates stored (<=5)
+        PreconditionInfo() : score(1.0), templateCount(0) {}
+        explicit PreconditionInfo(double s) : score(s), templateCount(0) {}
+    };
+
     class ModelReusableAgent : public AbstractAgent {
 
     public:
         explicit ModelReusableAgent(const ModelPtr &model);
+        // Pending guided-target utilities: allow external caller (Model) to pop pending target for an action
+        uintptr_t popPendingGuidedTarget(uint64_t actionHash);
+        void setPendingGuidedTarget(uint64_t actionHash, uintptr_t pageHash);
+        // Expose feedback API publicly so Model can notify results
+        void processGuidedActionResult(const ActionPtr &action, uintptr_t targetPageHash, bool reached,
+                                       const std::vector<uint64_t> &episodePath);
 
         // load & save will be automatically called in construct & dealloc
         virtual void loadReuseModel(const std::string &packageName);
@@ -37,6 +73,14 @@ namespace fastbotx {
         static void threadModelStorage(const std::weak_ptr<ModelReusableAgent> &agent);
 
         ~ModelReusableAgent() override;
+
+        void addCurrentPageAsPrecondition();
+        // Add precondition using an externally provided State (constructed from XML by caller)
+        void addCurrentPageAsPrecondition(const StatePtr &state);
+
+        // New: call this when an external controller starts a new episode/round.
+        // It clears the per-episode covered set and resets per-episode statistics.
+        void beginNewEpisode();
 
     protected:
         virtual double computeRewardOfLatestAction();
@@ -68,6 +112,27 @@ namespace fastbotx {
 
         ActionPtr selectActionByQValue();
 
+        // New: select actions based on a probability model (prioritize actions likely to reach new activities)
+        ActionPtr selectActionByProbabilityModel();
+
+        // New: replan path using updated action probabilities
+        void replanPath();
+
+        // Guidance: select an action guided by precondition action-success probabilities
+        ActionPtr selectGuidedActionForPrecondition();
+
+        // Check pending guide result from previous step and apply reward/penalty
+        void checkPendingGuideResult();
+
+        // New helper: compute the guidance probability P(A) for action A to reach a precondition page
+        // Formula: P(A) = (count(A->Pre) / total_clicks(A)) * scorePre * Rmulti(A)
+        double computePreconditionActionProbability(uintptr_t pageHash, const ActionPtr &action) const;
+
+        // New helper: check if an action has been tried over the attempt limit during guidance for a page
+        bool isActionOverAttemptLimit(uintptr_t pageHash, uint64_t actionHash) const;
+
+        // New helper: get total clicks for an action from reuse model (sum of per-target counts)
+        int getTotalClicksForAction(uint64_t actionHash) const;
 
     protected:
         double _alpha{};
@@ -85,13 +150,83 @@ namespace fastbotx {
         std::string _modelSavePath;
         std::string _defaultModelSavePath;
         static std::string DefaultModelSavePath; // if the saved path is not specified, use this as the default.
-        std::mutex _reuseModelLock;
+        mutable std::mutex _reuseModelLock;
 
         void computeAlphaValue();
 
         double getQValue(const ActionPtr &action);
 
         void setQValue(const ActionPtr &action, double qValue);
+
+        // New: mapping from page hash to PreconditionInfo (replaces previous simple int map)
+        std::unordered_map<uintptr_t, PreconditionInfo> _preconditionPages;
+
+        // New: set of precondition pages covered during the current episode
+        std::unordered_set<uintptr_t> _coveredPreconditionsThisEpisode;
+
+        // New: mutex protecting precondition data structures
+        std::mutex _preconditionLock;
+
+        // New: action probability model
+        std::unordered_map<uint64_t, double> _actionProbabilities;
+
+        // New: precondition algorithm hyper-parameters (tunable)
+        double _precond_alpha;    // EMA alpha for per-step update (tunable): controls sensitivity to recent visits, range (0,1]. Larger => more sensitive to recent events.
+        double _hit_decay;        // score decay factor when page is hit (tunable): in (0,1], smaller => faster decay of long-term importance.
+        double _min_score;        // score floor (tunable): prevents score from dropping below this value, ensures minimum priority.
+        double _precond_lambda;   // reward multiplier for precondition (tunable): scales the intrinsic reward from covering a precondition page.
+        double _sigmoid_k;        // sigmoid steepness for mappedFreq (tunable): larger => sharper transition around _sigmoid_b.
+        double _sigmoid_b;        // sigmoid center/bias (tunable): the EMA value mapped to 0.5 by the sigmoid.
+        // Guidance-specific hyperparameters
+        double _guidance_gamma;   // gamma for Rmulti bonus (tunable)
+        int _guidance_action_attempt_limit; // per-action attempt limit during guidance (tunable)
+        int _guidance_history_len; // how many historical actions to record (default 6)
+        double _attempt_fail_decay; // per-attempt decay factor for guidance probability in this episode (0<d<=1)
+
+        // runtime: per-precondition per-action attempt counts during guidance phase
+        std::unordered_map<uintptr_t, std::unordered_map<uint64_t, int>> _guidanceAttemptCounts;
+
+        // Runtime-only state for steering the guided algorithm (non-persisted)
+        std::unordered_map<uintptr_t, std::unordered_map<uint64_t, int>> _consecutiveFails; // pageHash -> actionHash -> consecutive fails
+        std::unordered_map<uintptr_t, int> _lastPosition; // pageHash -> last chosen position in template
+        std::unordered_map<uintptr_t, int> _noProgressCount; // pageHash -> consecutive no-progress attempts for this page
+        // Pending guided action targets: actionHash -> targetPageHash; used to evaluate reach/fail when next state observed
+        std::unordered_map<uint64_t, uintptr_t> _pendingGuidedTargets;
+        // Age counters for pending guided targets; incremented each select call; if age > _pending_max_age -> treat as failure
+        std::unordered_map<uint64_t, int> _pendingGuidedAges;
+        int _pending_max_age = 2; // default threshold (steps) before aging a pending guided action to failure
+
+        // Guided action tracking with delayed check mechanism:
+        // When a guide action is selected, we record it as "pending".
+        // In the NEXT updateStrategy call, we check if addCurrentPageAsPrecondition was called in between.
+        //
+        // Timeline:
+        // Step N: selectGuidedAction -> set _pendingGuideCheck = {hash, targetPage}
+        //         return action to Java
+        // [action executed, if precondition reached: addCurrentPageAsPrecondition called, sets _preconditionReachedSinceLastGuide = true]
+        // Step N+1: updateStrategy -> check _pendingGuideCheck, apply reward or penalty based on _preconditionReachedSinceLastGuide
+        //           selectGuidedAction (if applicable) -> set new _pendingGuideCheck
+
+        bool _hasPendingGuideCheck = false;
+        uint64_t _pendingGuideActionHash = 0;
+        uintptr_t _pendingGuideTargetPage = 0;
+        // Flag: set to true by addCurrentPageAsPrecondition, checked and reset by updateStrategy
+        bool _preconditionReachedSinceLastGuide = false;
+
+        // Limits to prevent over-exploitation of a single template/page
+        static constexpr int MAX_TEMPLATE_REWARDS_PER_EPISODE = 10;   // max times a template can be rewarded in one episode
+        static constexpr int MAX_TEMPLATE_SELECTIONS_PER_EPISODE = 5; // max times a template can be selected in one episode
+        static constexpr int MAX_PAGE_SELECTIONS_PER_EPISODE = 10;    // max times a page can be targeted in one episode
+
+        // Per-template reward counts: pageHash -> templateIndex -> reward count
+        std::unordered_map<uintptr_t, std::unordered_map<int, int>> _templateRewardCounts;
+        // Per-template selection counts: pageHash -> templateIndex -> selection count
+        std::unordered_map<uintptr_t, std::unordered_map<int, int>> _templateSelectionCounts;
+        // Per-page selection counts: pageHash -> selection count
+        std::unordered_map<uintptr_t, int> _pageSelectionCounts;
+
+        // Internal helper: process feedback when only action hash is available
+        void processGuidedActionResultByHash(uint64_t actionHash, uintptr_t targetPageHash, bool reached);
     };
 
     typedef std::shared_ptr<ModelReusableAgent> ReuseAgentPtr;
